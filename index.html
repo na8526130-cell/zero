@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Remix 海斗tube</title>
+    <meta name="description" content="YouTube Data APIを活用した多機能動画クライアント「海斗tube」。急上昇・検索・チャンネル・コメント・Education埋め込み再生対応。" />
+    <meta property="og:title" content="Remix 海斗tube" />
+    <meta property="og:description" content="YouTube Data APIを活用した多機能動画クライアント「海斗tube」。急上昇・検索・チャンネル・コメント・Education埋め込み再生対応。" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" id="app-favicon" />
+    <link rel="shortcut icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <!-- Google Identity Services (GIS) for Google Sign-In -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+      // Fallback timer if app bundle takes too long to mount
+      window.addEventListener('DOMContentLoaded', function() {
+        setTimeout(function() {
+          var fallbackMsg = document.getElementById('loading-submsg');
+          var retryBtn = document.getElementById('loading-retry-btn');
+          if (fallbackMsg && retryBtn) {
+            fallbackMsg.innerText = '読み込みに時間がかかっています...';
+            retryBtn.style.display = 'inline-block';
+          }
+        }, 5000);
+      });
+      window.addEventListener('error', function(e) {
+        console.warn('Startup window error:', e.message || e);
+      });
+    </script>
+  </head>
+  <body class="bg-[#0f0f0f] text-neutral-100 transition-colors">
+    <div id="root">
+      <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0f0f0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;user-select:none;-webkit-user-select:none;">
+        <div style="display:flex;align-items:center;justify-content:center;gap:10px;animation:ytPulse 2s ease-in-out infinite;">
+          <!-- YouTube Official Iconic Red Badge -->
+          <div style="width:64px;height:44px;background:#ff0000;border-radius:13px;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(255,0,0,0.4);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="#ffffff" style="margin-left:3px;">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+          <!-- YouTube Brand Typography -->
+          <div style="color:#ffffff;font-size:24px;font-weight:800;letter-spacing:-1px;">
+            ZERO<span style="color:#ff0000;">tube</span>
+          </div>
+        </div>
+        <!-- YouTube Slim Shimmer Progress Bar -->
+        <div style="width:120px;height:3px;background:rgba(255,255,255,0.12);border-radius:999px;margin-top:28px;overflow:hidden;position:relative;">
+          <div style="width:45%;height:100%;background:#ff0000;border-radius:999px;position:absolute;animation:ytShimmer 1.4s ease-in-out infinite;"></div>
+        </div>
+        <div style="margin-top:16px;">
+          <button id="loading-retry-btn" onclick="try{localStorage.clear();sessionStorage.clear();}catch(e){}location.reload();" style="display:none;padding:6px 14px;background:#27272a;color:#d4d4d8;border:1px solid #3f3f46;border-radius:999px;font-size:11px;font-weight:600;cursor:pointer;">
+            再読み込み
+          </button>
+        </div>
+      </div>
+      <style>
+        @keyframes ytPulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.03); opacity: 0.92; }
+        }
+        @keyframes ytShimmer {
+          0% { left: -45%; }
+          100% { left: 100%; }
+        }
+      </style>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
