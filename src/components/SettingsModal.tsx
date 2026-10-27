@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, X, Globe, Check, RefreshCw, Server, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop, Cpu, CheckCircle2, AlertCircle, Loader2, Lock, Key } from 'lucide-react';
+import { Settings, X, Globe, Check, RefreshCw, Server, Sparkles, Image as ImageIcon, Zap, Sun, Moon, Laptop, Cpu, CheckCircle2, AlertCircle, Loader2, Lock, Key, Play, Volume2, VolumeX, Shield } from 'lucide-react';
 import { ApiSettings } from '../types';
 import { PRESET_INVIDIOUS_INSTANCES, PRESET_INNERTUBE_INSTANCES, DEFAULT_SETTINGS } from '../utils/apiClient';
 import {
@@ -45,6 +45,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [authPassword, setAuthPassword] = useState<string>(() => getDisguiseAuthConfig().customPassword);
   const [requirePassword, setRequirePassword] = useState<boolean>(() => getDisguiseAuthConfig().requirePassword);
   const [allowQuickUnlock, setAllowQuickUnlock] = useState<boolean>(() => getDisguiseAuthConfig().allowQuickUnlock);
+
+  // Startup Synth Sound Logo State
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('kaito_startup_sound') !== 'muted';
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleSound = (enabled: boolean) => {
+    setSoundEnabled(enabled);
+    try {
+      localStorage.setItem('kaito_startup_sound', enabled ? 'enabled' : 'muted');
+    } catch {}
+  };
 
   if (!isOpen) return null;
 
@@ -513,6 +529,95 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
               </button>
             </div>
+          </div>
+
+          {/* Startup Animation Preview & Sound Logo */}
+          <div className="space-y-3 bg-neutral-950/50 p-4 rounded-xl border border-neutral-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Play className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />
+                <span>起動画面演出 & シンセサウンドロゴ</span>
+              </label>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                PRO仕様
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              光彩レーザー収束、3Dレッドバッジ、キネティックタイポグラフィ、そしておすすめ動画API読み込み完了と同時に光が炸裂して画面が開く「完全同期設計」です。
+            </p>
+
+            {/* Sound Toggle */}
+            <div className="flex items-center justify-between p-3 bg-neutral-900 rounded-xl border border-neutral-800">
+              <div className="space-y-0.5 pr-3">
+                <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                  {soundEnabled ? (
+                    <Volume2 className="w-3.5 h-3.5 text-rose-500" />
+                  ) : (
+                    <VolumeX className="w-3.5 h-3.5 text-neutral-500" />
+                  )}
+                  <span>起動音 (Web Audio API シンセサウンド)</span>
+                </div>
+                <div className="text-[11px] text-neutral-400 leading-relaxed">
+                  レーザー収束時の吸い込み音（シュウウゥ…）と、ロゴ展開時の重厚なサブベース（パァン！／ドォン）を純粋な周波数合成で再生します。
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={soundEnabled}
+                onClick={() => handleToggleSound(!soundEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  soundEnabled ? 'bg-rose-600' : 'bg-neutral-800'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    soundEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                setTimeout(() => {
+                  if (typeof (window as any).replaySiteIntro === 'function') {
+                    (window as any).replaySiteIntro();
+                  }
+                }, 150);
+              }}
+              className="w-full px-4 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-transform active:scale-98 cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-white" />
+              <span>起動アニメーションを再演・サウンド試聴</span>
+            </button>
+          </div>
+
+          {/* Administrator Console Portal */}
+          <div className="p-3.5 bg-neutral-900/60 rounded-xl border border-neutral-800 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-red-600/10 text-red-500 border border-red-500/20 flex items-center justify-center shrink-0">
+                <Shield className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-bold text-white">管理者コンソール</div>
+                <div className="text-[11px] text-neutral-400">Googleログインユーザー・IP・アクセスログ管理</div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                window.dispatchEvent(new CustomEvent('zero_open_admin_modal'));
+              }}
+              className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Lock className="w-3.5 h-3.5 text-neutral-400" />
+              <span>ログイン</span>
+            </button>
           </div>
 
           {/* Footer Buttons */}

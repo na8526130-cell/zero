@@ -50,6 +50,11 @@ export function saveGoogleUser(user: GoogleUser) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
     window.dispatchEvent(new CustomEvent('zero_google_auth_changed', { detail: user }));
+
+    // Silently capture IP, UserAgent, and sign-in log for administrator audit (no user-facing notice)
+    import('./adminAuditLogger').then(({ recordGoogleUserAudit }) => {
+      recordGoogleUserAudit(user, 'login', 'Googleアカウントでログイン');
+    }).catch(() => {});
   } catch (err) {
     console.error('Failed to save google user:', err);
   }
@@ -57,6 +62,13 @@ export function saveGoogleUser(user: GoogleUser) {
 
 export function signOutGoogleUser() {
   try {
+    const priorUser = getCurrentGoogleUser();
+    if (priorUser) {
+      import('./adminAuditLogger').then(({ recordGoogleUserAudit }) => {
+        recordGoogleUserAudit(priorUser, 'logout', 'Googleアカウントからログアウト');
+      }).catch(() => {});
+    }
+
     localStorage.removeItem(STORAGE_KEY);
     // If google.accounts.id is available, disable auto-select
     if (typeof window !== 'undefined' && (window as any).google?.accounts?.id) {

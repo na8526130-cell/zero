@@ -1,6 +1,7 @@
 /**
  * YouTube Education Player Engine & Dynamic Parameter Management
  * Compatible with Google Spreadsheet GViz Engine & Educational Stream
+ * Reference implementation: ajgpw/siatube (Siatube Education Player)
  */
 
 export interface SpreadsheetEduConfig {
@@ -14,32 +15,41 @@ export interface EducationStreamResponse {
   param?: string;
 }
 
+const EDUCATION_HOST = 'https://www.youtubeeducation.com';
 const SPREADSHEET_ID = '1dily2wiik92TAyK3zyIsu8TDuyYNoF20IM1iMk_X-pg';
 const SHEET_NAME = 'Youtube-education-parameter';
-const CACHE_KEY = 'kaito_edu_spreadsheet_cache_v1';
+const CACHE_KEY = 'kaito_edu_spreadsheet_cache_v2';
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const WIDGET_SCRIPT_ID = 'youtube-education-widget-api';
 export const USER_GESTURE_KEY = 'yt_user_gesture_v1';
+
+// Verified fallback parameters from Kahoot / SiaTube education embed
+export const DEFAULT_EDU_PARAMETER =
+  '?autoplay=1&mute=0&controls=1&start=0&origin=https%3A%2F%2Fcreate.kahoot.it&playsinline=0&showinfo=0&rel=0&iv_load_policy=3&modestbranding=1&fs=1&cc_load_policy=0&embed_config=%7B%22enc%22%3A%22AXH1ezlIo9yTZoatl0F62iZ6Ls3G_5pHNSBqr8c_NANOhDdqf6xXY6FI5Qe7Q9JeLi3FDmyhfBH9XHZ_DXPnzx0r8GbpbPuehIOngg7EazWDhKW1GCnKt3Ss_rpZndygViNnTCUAfSuxyrBJjJbX-VBnrPPY5VMn9Q%3D%3D%22%2C%22hideTitle%22%3Atrue%7D&enablejsapi=1&widgetid=1&forigin=https%3A%2F%2Fcreate.kahoot.it%2Flearner%2Fcb8cb5ae-d835-4c4a-bc2d-9cc78519d646%2Fcourse%2F6fba06e3-1f76-47a8-9a4a-53c53eb86286%2F0&aoriginsup=1&vf=6';
 
 let inMemoryConfig: SpreadsheetEduConfig | null = null;
 let inMemoryConfigTimestamp = 0;
 let widgetApiPromise: Promise<any> | null = null;
 
-export function normalizeEduParameter(
-  rawParam: string,
-  options: { autoplay?: boolean; start?: number; origin?: string } = {}
-): string {
-  const normalizedParameterText = String(rawParam || '')
+export interface EducationParameterOptions {
+  autoplay?: boolean;
+  start?: number;
+  origin?: string;
+  forigin?: string;
+}
+
+export function createYoutubeEducationParameters(
+  parameterText?: string,
+  options: EducationParameterOptions = {}
+): URLSearchParams {
+  const normalizedParameterText = String(parameterText || DEFAULT_EDU_PARAMETER)
     .trim()
     .replace(/&amp;/gi, '&')
     .replace(/&#0*38;/gi, '&')
     .replace(/&#x0*26;/gi, '&')
     .replace(/^\?/, '');
 
-  const params = new URLSearchParams(
-    normalizedParameterText ||
-      'enablejsapi=1&rel=0&controls=1&showinfo=0&start=0&autoplay=1&playsinline=1&cc_load_policy=0&errorlinks=1&hl=ja&authuser=0&modestbranding=1'
-  );
+  const params = new URLSearchParams(normalizedParameterText);
   params.set('enablejsapi', '1');
   params.set('controls', '1');
   params.set('playsinline', '1');
@@ -50,33 +60,63 @@ export function normalizeEduParameter(
   if (!params.has('widgetid')) {
     params.set('widgetid', '1');
   }
-  if (
-    typeof window !== 'undefined' &&
+
+  const detectedOrigin =
+    options.origin ||
+    (typeof window !== 'undefined' &&
     (window.location.protocol === 'http:' || window.location.protocol === 'https:')
-  ) {
-    if (!params.has('origin') && !params.has('embed_config')) {
-      params.set('origin', options.origin || window.location.origin);
-    }
-    if (!params.has('forigin') && !params.has('embed_config')) {
-      params.set('forigin', window.location.href);
-    }
+      ? window.location.origin
+      : '');
+  if (detectedOrigin) {
+    params.set('origin', detectedOrigin);
   }
+
+  const detectedForigin =
+    options.forigin ||
+    (typeof window !== 'undefined' &&
+    (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+      ? window.location.href
+      : '');
+  if (detectedForigin) {
+    params.set('forigin', detectedForigin);
+  }
+
+  return params;
+}
+
+export function normalizeEduParameter(
+  rawParam?: string,
+  options: EducationParameterOptions = {}
+): string {
+  const params = createYoutubeEducationParameters(rawParam, options);
   return `?${params.toString()}`;
 }
 
 export function createYoutubeEducationEmbedUrl(
   videoId: string,
-  parameterText: string,
-  options: { autoplay?: boolean; start?: number; origin?: string } = {}
+  parameterText?: string,
+  options: EducationParameterOptions = {}
 ): string {
   const cleanId = encodeURIComponent(String(videoId || '').trim());
-  const query = normalizeEduParameter(parameterText, options);
-  return `https://www.youtubeeducation.com/embed/${cleanId}${query}`;
+  const params = createYoutubeEducationParameters(parameterText, options);
+  return `${EDUCATION_HOST}/embed/${cleanId}?${params.toString()}`;
+}
+
+export function configureYoutubeEducationEmbedUrl(
+  url: string,
+  options: EducationParameterOptions = {}
+): string {
+  try {
+    const parsed = new URL(url);
+    parsed.search = createYoutubeEducationParameters(parsed.search, options).toString();
+    return parsed.href;
+  } catch {
+    return url;
+  }
 }
 
 /**
- * 1. Fetch YouTube Education Embed URL from Backend API
- * Request to /api/stream/youtubeeducation/{videoId}
+ * 1. Fetch YouTube Education Embed URL from Backend API or generate directly
  */
 export async function fetchEducationStreamUrl(videoId: string): Promise<string> {
   const cleanId = String(videoId || '').trim();
@@ -93,28 +133,19 @@ export async function fetchEducationStreamUrl(videoId: string): Promise<string> 
       const data = await res.json();
       const streamUrl = typeof data === 'string' ? data : data?.url;
       if (typeof streamUrl === 'string' && streamUrl.trim()) {
-        let safeUrl = streamUrl.trim().replace('youtube-nocookie.com', 'youtubeeducation.com');
-        const qIdx = safeUrl.indexOf('?');
-        if (qIdx >= 0) {
-          safeUrl = safeUrl.slice(0, qIdx) + normalizeEduParameter(safeUrl.slice(qIdx));
-        } else {
-          safeUrl = safeUrl + normalizeEduParameter('');
-        }
-        return safeUrl;
+        return configureYoutubeEducationEmbedUrl(streamUrl);
       }
     }
   } catch (err) {
-    console.warn('[EducationEngine] Backend /api/stream/youtubeeducation failed, trying fallback:', err);
+    // Expected on static host without local backend
   }
 
-  // Fallback: build embed URL using dynamic spreadsheet parameter
+  // Fallback: build embed URL using dynamic spreadsheet parameter or verified default
   try {
     const config = await fetchSpreadsheetEducationConfig();
-    const param = normalizeEduParameter(config.parameterText);
-    return `https://www.youtubeeducation.com/embed/${cleanId}${param}`;
+    return createYoutubeEducationEmbedUrl(cleanId, config.parameterText);
   } catch {
-    const defaultParam = normalizeEduParameter('');
-    return `https://www.youtubeeducation.com/embed/${cleanId}${defaultParam}`;
+    return createYoutubeEducationEmbedUrl(cleanId, DEFAULT_EDU_PARAMETER);
   }
 }
 
@@ -134,16 +165,14 @@ function parseGvizResponse(text: string): any {
 
 /**
  * 2. Fetch dynamic parameters and Player API code from Google Spreadsheet (gviz range A1:A2)
+ * Falls back safely to verified Kahoot parameters if spreadsheet is inaccessible
  */
 export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Promise<SpreadsheetEduConfig> {
   const now = Date.now();
 
   // Check in-memory cache
   if (!forceRefresh && inMemoryConfig && now - inMemoryConfigTimestamp < CACHE_TTL) {
-    return {
-      ...inMemoryConfig,
-      parameterText: normalizeEduParameter(inMemoryConfig.parameterText)
-    };
+    return inMemoryConfig;
   }
 
   // Check localStorage cache
@@ -153,12 +182,9 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
       if (cachedStr) {
         const parsed = JSON.parse(cachedStr);
         if (parsed && parsed.timestamp && now - parsed.timestamp < CACHE_TTL && parsed.config) {
-          inMemoryConfig = {
-            ...parsed.config,
-            parameterText: normalizeEduParameter(parsed.config.parameterText)
-          };
+          inMemoryConfig = parsed.config;
           inMemoryConfigTimestamp = parsed.timestamp;
-          return inMemoryConfig;
+          return inMemoryConfig!;
         }
       }
     } catch {}
@@ -174,78 +200,68 @@ export async function fetchSpreadsheetEducationConfig(forceRefresh = false): Pro
     });
     const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?${params.toString()}`;
     const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`スプレッドシートの取得に失敗しました (${res.status})`);
+    if (res.ok) {
+      const rawText = await res.text();
+      const gviz = parseGvizResponse(rawText);
+
+      const row0Value = gviz?.table?.rows?.[0]?.c?.[0]?.v;
+      const row1Value = gviz?.table?.rows?.[1]?.c?.[0]?.v;
+
+      const paramText = typeof row0Value === 'string' && row0Value.trim() ? row0Value.trim() : DEFAULT_EDU_PARAMETER;
+      const widgetApi = typeof row1Value === 'string' ? row1Value.trim() : '';
+
+      const result: SpreadsheetEduConfig = {
+        parameterText: paramText,
+        widgetApiSource: widgetApi
+      };
+
+      inMemoryConfig = result;
+      inMemoryConfigTimestamp = now;
+
+      try {
+        localStorage.setItem(
+          CACHE_KEY,
+          JSON.stringify({
+            config: result,
+            timestamp: now
+          })
+        );
+      } catch {}
+
+      return result;
     }
-
-    const rawText = await res.text();
-    const gviz = parseGvizResponse(rawText);
-
-    if (gviz?.status === 'error') {
-      throw new Error('スプレッドシートからプレイヤー設定を取得できませんでした');
-    }
-
-    const row0Value = gviz?.table?.rows?.[0]?.c?.[0]?.v;
-    const row1Value = gviz?.table?.rows?.[1]?.c?.[0]?.v;
-
-    let paramText = typeof row0Value === 'string' ? row0Value.replace(/&amp;/g, '&').trim() : '';
-    const widgetApi = typeof row1Value === 'string' ? row1Value : '';
-
-    if (!paramText) {
-      throw new Error('スプレッドシートのA1にパラメータがありません');
-    }
-    if (!widgetApi) {
-      throw new Error('スプレッドシートのA2にPlayer APIコードがありません');
-    }
-
-    paramText = normalizeEduParameter(paramText);
-
-    const result: SpreadsheetEduConfig = {
-      parameterText: paramText,
-      widgetApiSource: widgetApi
-    };
-
-    inMemoryConfig = result;
-    inMemoryConfigTimestamp = now;
-
-    try {
-      localStorage.setItem(
-        CACHE_KEY,
-        JSON.stringify({
-          config: result,
-          timestamp: now
-        })
-      );
-    } catch {}
-
-    return result;
   } catch (err: any) {
-    console.warn('[EducationEngine] Direct spreadsheet fetch failed, trying local proxy /api/education-param:', err.message);
-    // Try backend proxy fallback
-    try {
-      const res = await fetch('/api/education-param');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.param) {
-          const fallbackConfig: SpreadsheetEduConfig = {
-            parameterText: normalizeEduParameter(data.param),
-            widgetApiSource: data.widgetApiSource || ''
-          };
-          return fallbackConfig;
-        }
-      }
-    } catch {}
-
-    if (inMemoryConfig) return inMemoryConfig;
-
-    throw err;
+    console.warn('[EducationEngine] Spreadsheet fetch warning:', err.message);
   }
+
+  // Try backend proxy fallback
+  try {
+    const res = await fetch('/api/education-param');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.param) {
+        const fallbackConfig: SpreadsheetEduConfig = {
+          parameterText: data.param,
+          widgetApiSource: data.widgetApiSource || ''
+        };
+        return fallbackConfig;
+      }
+    }
+  } catch {}
+
+  // Built-in verified fallback
+  const finalFallback: SpreadsheetEduConfig = {
+    parameterText: DEFAULT_EDU_PARAMETER,
+    widgetApiSource: inMemoryConfig?.widgetApiSource || ''
+  };
+  return finalFallback;
 }
 
 /**
  * 3. Dynamic injection of YouTube IFrame Player API (widgetApiSource) into <head>
+ * Reference: ensureYoutubeEducationPlayerApi in ajgpw/siatube
  */
-export function injectEducationPlayerApi(widgetApiSource: string): Promise<any> {
+export function injectEducationPlayerApi(widgetApiSource?: string): Promise<any> {
   if (typeof window === 'undefined') return Promise.reject(new Error('Window not available'));
 
   const win = window as any;
@@ -258,35 +274,8 @@ export function injectEducationPlayerApi(widgetApiSource: string): Promise<any> 
     return widgetApiPromise;
   }
 
-  if (!widgetApiSource || typeof widgetApiSource !== 'string' || !widgetApiSource.trim()) {
-    // If widgetApiSource is missing, fallback to official iframe_api script tag
-    return new Promise((resolve, reject) => {
-      let existing = document.getElementById(WIDGET_SCRIPT_ID) as HTMLScriptElement | null;
-      if (!existing) {
-        existing = document.createElement('script');
-        existing.id = WIDGET_SCRIPT_ID;
-        existing.src = 'https://www.youtube.com/iframe_api';
-        document.head.appendChild(existing);
-      }
-      const prevCallback = win.onYouTubeIframeAPIReady;
-      win.onYouTubeIframeAPIReady = () => {
-        prevCallback?.();
-        if (win.YT && typeof win.YT.Player === 'function') {
-          resolve(win.YT);
-        }
-      };
-      setTimeout(() => {
-        if (win.YT && typeof win.YT.Player === 'function') {
-          resolve(win.YT);
-        } else {
-          reject(new Error('YouTube Player API load timeout'));
-        }
-      }, 5000);
-    });
-  }
-
   widgetApiPromise = new Promise((resolve, reject) => {
-    let resolved = false;
+    let settled = false;
     let pollInterval: number | null = null;
     let timeoutTimer: number | null = null;
 
@@ -301,50 +290,52 @@ export function injectEducationPlayerApi(widgetApiSource: string): Promise<any> 
       }
     };
 
-    const checkReady = () => {
-      if (resolved) return true;
-      if (win.YT && typeof win.YT.Player === 'function') {
-        resolved = true;
-        cleanup();
-        resolve(win.YT);
-        return true;
+    const finish = () => {
+      if (settled || !win.YT || typeof win.YT.Player !== 'function') {
+        return false;
       }
-      return false;
+      settled = true;
+      cleanup();
+      resolve(win.YT);
+      return true;
     };
 
-    const previousReady = win.onYouTubeIframeAPIReady;
+    const previousReadyCallback = win.onYouTubeIframeAPIReady;
     win.onYouTubeIframeAPIReady = (...args: any[]) => {
-      if (typeof previousReady === 'function') {
+      if (typeof previousReadyCallback === 'function') {
         try {
-          previousReady(...args);
+          previousReadyCallback(...args);
         } catch {}
       }
-      checkReady();
+      finish();
     };
 
-    pollInterval = window.setInterval(checkReady, 50);
+    pollInterval = window.setInterval(finish, 50);
 
     timeoutTimer = window.setTimeout(() => {
-      if (!checkReady()) {
-        resolved = true;
-        cleanup();
-        document.getElementById(WIDGET_SCRIPT_ID)?.remove();
-        reject(new Error('IFrame Player APIの初期化がタイムアウトしました'));
-      }
+      if (finish()) return;
+      settled = true;
+      cleanup();
+      document.getElementById(WIDGET_SCRIPT_ID)?.remove();
+      reject(new Error('IFrame Player APIの初期化がタイムアウトしました'));
     }, 5000);
 
     let scriptTag = document.getElementById(WIDGET_SCRIPT_ID) as HTMLScriptElement | null;
     if (!scriptTag) {
       scriptTag = document.createElement('script');
       scriptTag.id = WIDGET_SCRIPT_ID;
-      scriptTag.textContent = widgetApiSource;
+      if (typeof widgetApiSource === 'string' && widgetApiSource.trim()) {
+        scriptTag.textContent = widgetApiSource;
+      } else {
+        scriptTag.src = 'https://www.youtube.com/iframe_api';
+      }
       document.head.appendChild(scriptTag);
     }
 
-    checkReady();
-  }).catch((err) => {
+    finish();
+  }).catch((error) => {
     widgetApiPromise = null;
-    throw err;
+    throw error;
   });
 
   return widgetApiPromise;

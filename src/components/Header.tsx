@@ -11,6 +11,7 @@ import {
   X,
   Globe,
   ShieldCheck,
+  Shield,
   Zap,
   GraduationCap,
   LogOut,
@@ -185,6 +186,8 @@ export const Header: React.FC<HeaderProps> = ({
         .then((data) => {
           if (Array.isArray(data)) {
             setSuggestions(data.slice(0, 8));
+          } else if (data && Array.isArray(data.suggestions)) {
+            setSuggestions(data.suggestions.slice(0, 8));
           } else if (data && Array.isArray(data[1])) {
             setSuggestions(data[1].slice(0, 8));
           }
@@ -392,7 +395,7 @@ export const Header: React.FC<HeaderProps> = ({
 
             <div className="flex items-center">
               <span className="font-black text-lg sm:text-xl tracking-tight text-neutral-900 dark:text-white">
-                ZERO<span className="text-rose-500">-tube</span>
+                zero<span className="text-rose-500">-tube</span>
               </span>
             </div>
           </button>
@@ -661,6 +664,16 @@ export const Header: React.FC<HeaderProps> = ({
                     >
                       <Users className="w-4 h-4 text-indigo-500" />
                       <span>登録チャンネル一覧</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        window.dispatchEvent(new CustomEvent('zero_open_admin_modal'));
+                        setUserDropdownOpen(false);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors text-neutral-700 dark:text-neutral-300"
+                    >
+                      <Shield className="w-4 h-4 text-red-500" />
+                      <span>管理者ログイン</span>
                     </button>
                   </div>
 

@@ -1,14 +1,17 @@
 import { ApiSettings } from '../types';
+import { getSavedGasProxyUrl, isGasEnvironment } from './gasSyncManager';
+
+export const DEFAULT_WORKER_URL = 'https://proxy.wa0260966.workers.dev';
 
 export const DEFAULT_SETTINGS: ApiSettings = {
   provider: 'innertube',
-  innertubeUrl: '/api/worker',
+  innertubeUrl: 'https://proxy.wa0260966.workers.dev',
   invidiousUrl: 'https://yt.omada.cafe/'
 };
 
 export const PRESET_INNERTUBE_INSTANCES = [
-  { name: 'サーバー内蔵 InnerTube Worker (/api/worker・推奨・最速)', url: '/api/worker' },
-  { name: '自作 Cloudflare Worker (proxy.wa0260966.workers.dev)', url: 'https://proxy.wa0260966.workers.dev/' }
+  { name: '専用 Cloudflare Worker (proxy.wa0260966.workers.dev・推奨・高速)', url: 'https://proxy.wa0260966.workers.dev' },
+  { name: 'サーバー内蔵 InnerTube Worker (/api/worker)', url: '/api/worker' }
 ];
 
 export const PRESET_INVIDIOUS_INSTANCES = [
@@ -61,17 +64,34 @@ export function wrapWithCustomProxy(targetUrl: string): string {
 export function getApiSettings(): ApiSettings {
   try {
     const saved = localStorage.getItem('kaito_tube_settings');
+    const isStaticHost = typeof window !== 'undefined' && 
+      (window.location.hostname.includes('fuma-kotaro.com') ||
+       window.location.hostname.includes('shinobi.jp') ||
+       window.location.hostname.includes('github.io') ||
+       !window.location.port ||
+       window.location.port === '80' ||
+       window.location.port === '443');
+
     if (saved) {
       const parsed = JSON.parse(saved);
       const rawUrl = (parsed.innertubeUrl || '').trim();
       const isLegacyDead =
         rawUrl.includes('myproxy0108.workers.dev') ||
         rawUrl.includes('yt-proxy.workers.dev');
-      const migratedUrl = !rawUrl || isLegacyDead ? '/api/worker' : rawUrl;
+      let migratedUrl = !rawUrl || isLegacyDead ? DEFAULT_WORKER_URL : rawUrl;
+      if (isStaticHost && (migratedUrl === '/api/worker' || migratedUrl.startsWith('/'))) {
+        migratedUrl = DEFAULT_WORKER_URL;
+      }
       return {
         provider: 'innertube',
         innertubeUrl: migratedUrl,
         invidiousUrl: parsed.invidiousUrl || 'https://yt.omada.cafe/'
+      };
+    } else if (isStaticHost) {
+      return {
+        provider: 'innertube',
+        innertubeUrl: DEFAULT_WORKER_URL,
+        invidiousUrl: 'https://yt.omada.cafe/'
       };
     }
   } catch (e) {
@@ -170,10 +190,22 @@ async function fetchDirectInvidiousJson(invBase: string, endpoint: string, param
 }
 
 async function fetchDirectWorkerJson(workerBase: string, endpoint: string, params: Record<string, string> = {}) {
-  let base = (workerBase || 'https://proxy.wa0260966.workers.dev').trim().replace(/\/+$/, '');
-  if (base.startsWith('/')) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-    base = `${origin}${base}`;
+  let base = (workerBase || DEFAULT_WORKER_URL).trim().replace(/\/+$/, '');
+  const isStaticHost = typeof window !== 'undefined' && 
+    (window.location.hostname.includes('fuma-kotaro.com') ||
+     window.location.hostname.includes('shinobi.jp') ||
+     window.location.hostname.includes('github.io') ||
+     !window.location.port ||
+     window.location.port === '80' ||
+     window.location.port === '443');
+
+  if (base.startsWith('/') || base === 'self' || base === 'local' || (isStaticHost && base.includes('fuma-kotaro.com'))) {
+    if (!isStaticHost && typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      const origin = window.location.origin;
+      base = `${origin}${base.startsWith('/') ? base : '/api/worker'}`;
+    } else {
+      base = DEFAULT_WORKER_URL;
+    }
   } else if (!base.startsWith('http')) {
     base = 'https://' + base;
   }
@@ -676,13 +708,150 @@ async function resolveClientInnerTubeFallback(urlStr: string): Promise<any | nul
         }
       } catch {}
     }
+
+    // 11. Autocomplete Search Suggestions (/api/youtube/suggest, /api/youtube/suggestions)
+    if (pathPart === '/api/youtube/suggest' || pathPart === '/api/youtube/suggestions') {
+      const q = searchParams.get('q') || '';
+      if (!q.trim()) return { suggestions: [] };
+      try {
+        const sData = await fetchDirectWorkerJson(workerBase, 'suggestions', { q });
+        if (sData && Array.isArray(sData.suggestions) && sData.suggestions.length > 0) return sData;
+        if (Array.isArray(sData) && Array.isArray(sData[1]) && sData[1].length > 0) return { suggestions: sData[1] };
+      } catch {}
+      try {
+        const nativeFetch = (window as any).__originalFetch || window.fetch;
+        const gUrl = `https://suggestqueries.google.com/complete/search?client=firefox&hl=ja&gl=jp&ds=yt&q=${encodeURIComponent(q)}`;
+        const gRes = await nativeFetch.call(window, gUrl);
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          if (Array.isArray(gData) && Array.isArray(gData[1])) {
+            return { suggestions: gData[1] };
+          }
+        }
+      } catch {}
+      return { suggestions: [] };
+    }
+
+    // 12. Structured Transcript & Captions (/api/youtube/transcript/:id, /api/youtube/captions/:id)
+    if (pathPart.startsWith('/api/youtube/transcript/') || pathPart.startsWith('/api/youtube/captions/')) {
+      const id = decodeURIComponent(pathPart.replace('/api/youtube/transcript/', '').replace('/api/youtube/captions/', ''));
+      const lang = searchParams.get('lang') || 'ja';
+      try {
+        const tData = await fetchDirectWorkerJson(workerBase, `transcript/${id}`, { lang });
+        if (tData && (tData.fullText || Array.isArray(tData.segments))) {
+          return tData;
+        }
+      } catch {}
+      try {
+        const cData = await fetchDirectWorkerJson(workerBase, `captions/${id}`, { lang });
+        if (cData && (cData.fullText || Array.isArray(cData.segments))) {
+          return cData;
+        }
+      } catch {}
+      return { videoId: id, language: lang, fullText: '', segments: [] };
+    }
+
+    // 13. Direct Audio Stream Extractor (/api/youtube/audio/:id)
+    if (pathPart.startsWith('/api/youtube/audio/')) {
+      const id = decodeURIComponent(pathPart.replace('/api/youtube/audio/', ''));
+      try {
+        const aData = await fetchDirectWorkerJson(workerBase, `audio/${id}`);
+        if (aData && (aData.audioUrl || aData.directUrl)) {
+          return aData;
+        }
+      } catch {}
+      try {
+        const vData = await fetchDirectWorkerJson(workerBase, `videos/${id}`);
+        if (vData) {
+          const adaptive = Array.isArray(vData.adaptiveFormats) ? vData.adaptiveFormats : [];
+          const bestAudio =
+            adaptive.find((f: any) => (f.type || '').includes('audio/mp4') || (f.mimeType || '').includes('audio/mp4')) ||
+            adaptive.find((f: any) => (f.type || '').includes('audio'));
+          if (bestAudio?.url) {
+            return {
+              videoId: id,
+              title: vData.title || '',
+              author: vData.author || '',
+              audioUrl: bestAudio.url,
+              directUrl: bestAudio.url,
+              mimeType: bestAudio.type || bestAudio.mimeType || 'audio/mp4',
+              bitrate: bestAudio.bitrate || 128000
+            };
+          }
+        }
+      } catch {}
+      return null;
+    }
   } catch (e) {
     console.warn('Client InnerTube fallback error:', e);
   }
   return null;
 }
 
+export function getBackendApiBaseUrl(): string {
+  try {
+    const custom = (localStorage.getItem('kaito_api_base_url') || '').trim();
+    if (custom) return custom.replace(/\/+$/, '');
+  } catch {}
+
+  // Automatically detect external static hosts (e.g. Ninja Homepage tomo.fuma-kotaro.com, shinobi.jp)
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname || '';
+    if (host.includes('fuma-kotaro.com') || host.includes('shinobi.jp') || host.includes('github.io')) {
+      return 'https://ais-pre-koyzrd6kkwxxtarnhah5ni-628194465299.asia-northeast1.run.app';
+    }
+  }
+  return '';
+}
+
+export function saveBackendApiBaseUrl(url: string): void {
+  try {
+    const clean = url.trim().replace(/\/+$/, '');
+    if (clean) {
+      localStorage.setItem('kaito_api_base_url', clean);
+    } else {
+      localStorage.removeItem('kaito_api_base_url');
+    }
+    window.dispatchEvent(new CustomEvent('kaito_api_base_url_changed', { detail: clean }));
+  } catch (e) {
+    console.error('Failed to save API base URL:', e);
+  }
+}
+
 export async function customFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  // 1. Google Apps Script iframe sandbox direct RPC
+  if (isGasEnvironment() && (url.startsWith('/api/') || url.startsWith('/gas/'))) {
+    try {
+      const gasRes = await callGasApi(url, options);
+      if (gasRes.ok) return gasRes;
+    } catch (e) {
+      console.warn('GAS google.script.run call failed, falling back:', e);
+    }
+  }
+
+  // 2. Saved GAS Web App Proxy URL (e.g. script.google.com/macros/s/.../exec)
+  const savedGasUrl = getSavedGasProxyUrl();
+  if (savedGasUrl && (url.startsWith('/api/youtube/') || url.startsWith('/api/613tube/'))) {
+    try {
+      const sep = savedGasUrl.includes('?') ? '&' : '?';
+      const targetGasUrl = `${savedGasUrl}${sep}api=${encodeURIComponent(url)}`;
+      const nativeFetch = (window as any).__originalFetch || window.fetch;
+      const gasHttpRes = await nativeFetch.call(window, targetGasUrl, {
+        method: options.method || 'GET',
+        headers: { Accept: 'application/json' },
+        body: options.body
+      });
+      if (gasHttpRes.ok) {
+        const gasData = await gasHttpRes.clone().json().catch(() => null);
+        if (gasData && (Array.isArray(gasData.items) ? gasData.items.length > 0 : true)) {
+          return gasHttpRes;
+        }
+      }
+    } catch (gErr) {
+      console.warn('GAS proxy fetch failed, falling back to default:', gErr);
+    }
+  }
+
   const settings = getApiSettings();
   const customProxy = getCustomProxyUrl();
   const headers = new Headers(options.headers || {});
@@ -693,13 +862,38 @@ export async function customFetch(url: string, options: RequestInit = {}): Promi
     headers.set('x-custom-proxy-url', customProxy);
   }
 
+  const isStaticHost = typeof window !== 'undefined' && 
+    (window.location.hostname.includes('fuma-kotaro.com') || 
+     window.location.hostname.includes('shinobi.jp') || 
+     window.location.hostname.includes('github.io'));
+
+  // On static host without local backend, execute YouTube endpoints directly via dedicated Worker server
+  if (isStaticHost && (url.startsWith('/api/youtube/') || url.startsWith('/api/613tube/'))) {
+    const fallbackData = await resolveClientInnerTubeFallback(url);
+    if (fallbackData) {
+      return new Response(JSON.stringify(fallbackData), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
+  // Prepend backend API URL if running on a static host (like Ninja Homepage)
+  let targetUrl = url;
+  if (targetUrl.startsWith('/api/') || targetUrl.startsWith('/gas/')) {
+    const apiBase = getBackendApiBaseUrl();
+    if (apiBase) {
+      targetUrl = `${apiBase}${targetUrl}`;
+    }
+  }
+
   try {
-    const res = await fetch(url, {
+    const res = await fetch(targetUrl, {
       ...options,
       headers
     });
 
-    if (url.startsWith('/api/youtube/')) {
+    if (url.startsWith('/api/youtube/') || url.startsWith('/api/613tube/')) {
       try {
         const data = typeof res.clone === 'function' ? await res.clone().json() : await res.json();
         const isEmptyItems = !data || (Array.isArray(data.items) && data.items.length === 0);
@@ -723,7 +917,7 @@ export async function customFetch(url: string, options: RequestInit = {}): Promi
 
     return res;
   } catch (err) {
-    if (url.startsWith('/api/youtube/')) {
+    if (url.startsWith('/api/youtube/') || url.startsWith('/api/613tube/')) {
       const fallbackData = await resolveClientInnerTubeFallback(url);
       if (fallbackData) {
         return new Response(JSON.stringify(fallbackData), {

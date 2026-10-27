@@ -6,6 +6,7 @@ import { spawn, execFile } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { generateGasCode, generateGasIndexHtml, generateGasManifest } from './src/utils/gasSyncManager';
 
 dotenv.config();
 
@@ -17,6 +18,17 @@ try {
 const app = express();
 
 app.use(express.json());
+
+// Enable CORS for external static hosts (Ninja Homepage, GitHub Pages, Vercel, Render)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-api-provider, x-innertube-url, x-invidious-url, x-custom-proxy-url');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // =======================================================
 // ★ LuanRT/YouTube.js (youtubei.js) Official InnerTube Singleton
@@ -927,7 +939,7 @@ async function fetchInvidious(instanceUrl: string, endpoint: string, queryParams
 // ★ 海斗tube 自作 InnerTube Cloudflare Worker Engine (内蔵 + 外部Worker両対応)
 // =======================================================
 const INNERTUBE_API_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-const DEFAULT_INNERTUBE_WORKER = 'https://proxy.wa0260966.workers.dev';
+const DEFAULT_INNERTUBE_WORKER = process.env.INNERTUBE_WORKER_URL || 'https://proxy.wa0260966.workers.dev';
 
 // Dynamically load and execute our self-built Cloudflare Worker (/cloudflare-worker/worker.js) in-process
 let cachedSelfWorkerModule: any = null;
@@ -5047,7 +5059,7 @@ app.get('/api/youtube/suggest', async (req, res) => {
     if (response.ok) {
       const data = await response.json();
       if (Array.isArray(data) && Array.isArray(data[1])) {
-        return res.json(data[1]);
+        return res.json({ suggestions: data[1] });
       }
       return res.json(data);
     }
@@ -5055,7 +5067,64 @@ app.get('/api/youtube/suggest', async (req, res) => {
     console.warn('Suggest fetch error:', err);
   }
 
-  return res.json([]);
+  return res.json({ suggestions: [] });
+});
+
+// 8f. Audio-only Stream Extractor Endpoint (/api/youtube/audio/:id)
+app.get('/api/youtube/audio/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const workerModule = await getSelfWorkerModule();
+    if (workerModule && typeof workerModule.fetch === 'function') {
+      const resp = await workerModule.fetch(new Request(`https://internal/api/v1/audio/${id}`));
+      if (resp.ok) {
+        const data = await resp.json();
+        return res.json(data);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`Internal worker audio fetch failed (${id}):`, err?.message);
+  }
+
+  // Fallback to external worker
+  try {
+    const extRes = await fetch(`${DEFAULT_INNERTUBE_WORKER}/api/v1/audio/${id}`);
+    if (extRes.ok) {
+      const data = await extRes.json();
+      return res.json(data);
+    }
+  } catch {}
+
+  return res.status(404).json({ error: 'Audio stream not found' });
+});
+
+// 8g. Structured Transcript & Captions Endpoint (/api/youtube/transcript/:id, /api/youtube/captions/:id)
+app.get(['/api/youtube/transcript/:id', '/api/youtube/captions/:id'], async (req, res) => {
+  const { id } = req.params;
+  const lang = String(req.query.lang || 'ja');
+  try {
+    const workerModule = await getSelfWorkerModule();
+    if (workerModule && typeof workerModule.fetch === 'function') {
+      const resp = await workerModule.fetch(new Request(`https://internal/api/v1/transcript/${id}?lang=${encodeURIComponent(lang)}`));
+      if (resp.ok) {
+        const data = await resp.json();
+        return res.json(data);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`Internal worker transcript fetch failed (${id}):`, err?.message);
+  }
+
+  // Fallback to external worker
+  try {
+    const extRes = await fetch(`${DEFAULT_INNERTUBE_WORKER}/api/v1/transcript/${id}?lang=${encodeURIComponent(lang)}`);
+    if (extRes.ok) {
+      const data = await extRes.json();
+      return res.json(data);
+    }
+  } catch {}
+
+  return res.json({ videoId: id, language: lang, fullText: '', segments: [] });
 });
 
 // 8f. Channel Playlists Endpoint (LuanRT/YouTube.js Primary + Releases + Fallbacks)
@@ -6978,9 +7047,9 @@ app.get('/api/proxy/test-custom', async (req, res) => {
   }
 });
 
-// 11. AI Video Summarizer with Gemini
+// 11. AI Video Summarizer with Gemini (with Transcript Integration)
 app.post('/api/ai/summarize', async (req, res) => {
-  const { title, description, channelTitle, tags } = req.body;
+  const { title, description, channelTitle, tags, transcript, videoId } = req.body;
 
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -6995,27 +7064,43 @@ app.post('/api/ai/summarize', async (req, res) => {
       });
     }
 
+    let transcriptText = transcript || '';
+    if (!transcriptText && videoId) {
+      try {
+        const workerModule = await getSelfWorkerModule();
+        if (workerModule && typeof workerModule.fetch === 'function') {
+          const resp = await workerModule.fetch(new Request(`https://internal/api/v1/transcript/${videoId}?lang=ja`));
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data?.fullText) transcriptText = data.fullText;
+          }
+        }
+      } catch {}
+    }
+
     const ai = new GoogleGenAI({ apiKey });
-    const prompt = `あなたは動画学習アシスタント「海斗tube AI」です。
-以下のYouTube動画情報を元に、日本語で分かりやすく動画概要と主要ポイントをまとめてください。
+    const prompt = `あなたは動画学習アシスタント「ZERO-tube AI」です。
+以下のYouTube動画情報および文字起こしテキストを元に、日本語で分かりやすく動画概要と主要ポイントをまとめてください。
+文字起こしテキストがある場合は、実際に話されている重要ポイントとタイムスタンプを正確に反映してください。
 
 動画タイトル: ${title}
 チャンネル名: ${channelTitle}
 タグ: ${Array.isArray(tags) ? tags.join(', ') : tags || ''}
-概要欄: ${description ? description.slice(0, 1000) : 'なし'}
+概要欄: ${description ? description.slice(0, 800) : 'なし'}
+${transcriptText ? `\n【動画の音声文字起こし/字幕テキスト】:\n${transcriptText.slice(0, 5000)}` : ''}
 
 以下のJSON形式で出力してください:
 {
-  "summary": "動画の全体要約（200文字程度）",
+  "summary": "動画の全体要約（200〜300文字程度）",
   "keyTakeaways": [
     "主要ポイント1",
     "主要ポイント2",
     "主要ポイント3"
   ],
   "estimatedTimestamps": [
-    {"time": "00:00", "label": "オープニング・イントロ"},
-    {"time": "03:15", "label": "核心となるコンセプト解説"},
-    {"time": "08:30", "label": "実践・応用とまとめ"}
+    {"time": "00:00", "label": "オープニング・導入"},
+    {"time": "02:15", "label": "重要トピック解説"},
+    {"time": "06:30", "label": "まとめ・実践"}
   ]
 }`;
 
@@ -7573,6 +7658,78 @@ app.post('/api/playlists/:id/clone', (req, res) => {
     return res.json({ success: true, cloneCount: existing.cloneCount, playlist: existing });
   }
   return res.json({ success: true, cloneCount: 1 });
+});
+
+// GET /api/gas/code - Returns current Code.gs, index.html, and appsscript.json for user's GAS project
+app.get('/api/gas/code', (req, res) => {
+  const origin = `${req.protocol}://${req.get('host')}`;
+  return res.json({
+    success: true,
+    version: '3.1.0',
+    code: generateGasCode(),
+    html: generateGasIndexHtml(origin),
+    manifest: generateGasManifest()
+  });
+});
+
+// ==========================================
+// ★ Administrator Audit & IP Collector Routes
+// ==========================================
+const serverAuditStore: Array<any> = [];
+
+// GET /api/admin/client-ip - Returns client's IP from request headers
+app.get('/api/admin/client-ip', (req, res) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  let ip = '';
+  if (typeof forwarded === 'string') {
+    ip = forwarded.split(',')[0].trim();
+  } else if (Array.isArray(forwarded) && forwarded.length > 0) {
+    ip = forwarded[0].trim();
+  } else {
+    ip = req.socket?.remoteAddress || '';
+  }
+
+  // Clean IPv6 mapped IPv4 address
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.replace('::ffff:', '');
+  }
+
+  return res.json({
+    success: true,
+    ip: ip || '127.0.0.1',
+    userAgent: req.headers['user-agent'] || '',
+    country: '日本'
+  });
+});
+
+// POST /api/admin/audit-log - Receives background audit logs
+app.post('/api/admin/audit-log', (req, res) => {
+  try {
+    const entry = req.body;
+    if (entry && entry.user) {
+      serverAuditStore.unshift({
+        ...entry,
+        serverReceivedAt: new Date().toISOString()
+      });
+      if (serverAuditStore.length > 500) {
+        serverAuditStore.pop();
+      }
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to record audit log' });
+  }
+});
+
+// GET /api/admin/logs - Retrieves server-side audit logs
+app.get('/api/admin/logs', (req, res) => {
+  return res.json({ success: true, logs: serverAuditStore });
+});
+
+// POST /api/admin/clear-logs - Clears server-side audit logs
+app.post('/api/admin/clear-logs', (req, res) => {
+  serverAuditStore.length = 0;
+  return res.json({ success: true });
 });
 
 export default app;

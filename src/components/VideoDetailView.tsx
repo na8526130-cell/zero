@@ -259,6 +259,91 @@ export const VideoDetailView: React.FC<VideoDetailViewProps> = ({
   const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
   const [customPlaylistsList, setCustomPlaylistsList] = useState<UserCustomPlaylist[]>([]);
 
+  // AI Summary & Transcript states
+  const [showAiSummary, setShowAiSummary] = useState(false);
+  const [loadingAiSummary, setLoadingAiSummary] = useState(false);
+  const [aiSummaryData, setAiSummaryData] = useState<{
+    summary?: string;
+    keyTakeaways?: string[];
+    estimatedTimestamps?: { time: string; label: string }[];
+  } | null>(null);
+  const [aiSummaryError, setAiSummaryError] = useState<string | null>(null);
+
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+  const [transcriptData, setTranscriptData] = useState<{
+    videoId?: string;
+    language?: string;
+    fullText?: string;
+    segments?: { start: number; duration: number; text: string }[];
+  } | null>(null);
+  const [transcriptSearch, setTranscriptSearch] = useState('');
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setShowAiSummary(false);
+    setAiSummaryData(null);
+    setAiSummaryError(null);
+    setShowTranscript(false);
+    setTranscriptData(null);
+    setTranscriptSearch('');
+    setTranscriptError(null);
+  }, [videoId]);
+
+  const handleFetchAiSummary = async () => {
+    if (aiSummaryData) {
+      setShowAiSummary((prev) => !prev);
+      return;
+    }
+    setShowAiSummary(true);
+    setLoadingAiSummary(true);
+    setAiSummaryError(null);
+    try {
+      const res = await customFetch('/api/ai/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoId,
+          title: snippet.title || video.snippet?.title || '',
+          description: snippet.description || video.snippet?.description || '',
+          channelTitle: snippet.channelTitle || video.snippet?.channelTitle || '',
+          tags: snippet.tags || (video as any).snippet?.tags || []
+        })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAiSummaryData(data);
+    } catch (err: any) {
+      setAiSummaryError('AI要約の取得に失敗しました。時間をおいて再試行してください。');
+    } finally {
+      setLoadingAiSummary(false);
+    }
+  };
+
+  const handleFetchTranscript = async () => {
+    if (transcriptData) {
+      setShowTranscript((prev) => !prev);
+      return;
+    }
+    setShowTranscript(true);
+    setLoadingTranscript(true);
+    setTranscriptError(null);
+    try {
+      const res = await customFetch(`/api/youtube/transcript/${videoId}?lang=ja`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data || (!data.fullText && (!Array.isArray(data.segments) || data.segments.length === 0))) {
+        setTranscriptError('この動画には利用可能な字幕/文字起こしデータがありません。');
+      } else {
+        setTranscriptData(data);
+      }
+    } catch (err: any) {
+      setTranscriptError('字幕・文字起こしの取得に失敗しました。');
+    } finally {
+      setLoadingTranscript(false);
+    }
+  };
+
   useEffect(() => {
     const syncQueue = () => setUpNextQueue(getUpNextQueue());
     window.addEventListener('kaito_queue_changed', syncQueue);
@@ -1756,6 +1841,222 @@ export const VideoDetailView: React.FC<VideoDetailViewProps> = ({
               <span>{isDescExpanded ? '一部を表示' : 'もっと見る'}</span>
               {isDescExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
+          </div>
+
+          {/* AI Video Summary & Transcript Feature Bar */}
+          <div className="bg-neutral-900/80 border border-neutral-800 rounded-2xl p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleFetchAiSummary}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                    showAiSummary
+                      ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white shadow-md ring-2 ring-purple-400/50'
+                      : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700'
+                  }`}
+                  id="btn-ai-summary"
+                >
+                  <Sparkles className={`w-4 h-4 ${showAiSummary ? 'animate-spin text-amber-300' : 'text-purple-400'}`} />
+                  <span>AI動画要約 (Gemini)</span>
+                  <span className="px-1.5 py-0.2 bg-purple-500/20 text-purple-300 rounded text-[10px] font-semibold border border-purple-500/30">文字起こし連動</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleFetchTranscript}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                    showTranscript
+                      ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md ring-2 ring-emerald-400/50'
+                      : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700'
+                  }`}
+                  id="btn-transcript"
+                >
+                  <FileText className={`w-4 h-4 ${showTranscript ? 'text-emerald-200' : 'text-teal-400'}`} />
+                  <span>字幕・文字起こし</span>
+                  <span className="px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded text-[10px] font-semibold border border-emerald-500/30">タイムスタンプ</span>
+                </button>
+              </div>
+
+              <div className="text-[11px] text-neutral-400 hidden sm:block">
+                <span>ワンクリックで要点まとめ & 発言箇所へジャンプ</span>
+              </div>
+            </div>
+
+            {/* AI Summary View Panel */}
+            {showAiSummary && (
+              <div className="bg-gradient-to-b from-purple-950/40 to-neutral-900 border border-purple-500/40 rounded-xl p-4 text-xs space-y-3.5 animate-in fade-in duration-200 shadow-xl">
+                <div className="flex items-center justify-between border-b border-purple-500/30 pb-2">
+                  <div className="flex items-center gap-2 text-purple-300 font-bold">
+                    <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
+                    <span className="text-sm">Gemini AI による動画要約・主要ハイライト</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAiSummary(false)}
+                    className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {loadingAiSummary && (
+                  <div className="flex flex-col items-center justify-center py-6 gap-3 text-neutral-300">
+                    <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+                    <span>動画の音声文字起こしを取得し、Geminiで要点を抽出中...</span>
+                  </div>
+                )}
+
+                {aiSummaryError && (
+                  <div className="p-3 rounded-lg bg-rose-950/50 border border-rose-800 text-rose-300 flex items-center justify-between gap-2">
+                    <span>{aiSummaryError}</span>
+                    <button
+                      type="button"
+                      onClick={handleFetchAiSummary}
+                      className="px-2.5 py-1 rounded bg-rose-800 hover:bg-rose-700 text-white font-bold cursor-pointer"
+                    >
+                      再試行
+                    </button>
+                  </div>
+                )}
+
+                {aiSummaryData && (
+                  <div className="space-y-3 text-neutral-200 leading-relaxed">
+                    {aiSummaryData.summary && (
+                      <p className="bg-neutral-950/60 p-3 rounded-lg border border-purple-500/20 text-neutral-100 font-medium">
+                        {aiSummaryData.summary}
+                      </p>
+                    )}
+
+                    {Array.isArray(aiSummaryData.keyTakeaways) && aiSummaryData.keyTakeaways.length > 0 && (
+                      <div className="space-y-1.5">
+                        <h4 className="font-bold text-purple-300 flex items-center gap-1.5">
+                          <span>💡 主要ポイント・学習ハイライト:</span>
+                        </h4>
+                        <ul className="space-y-1 pl-1">
+                          {aiSummaryData.keyTakeaways.map((item, idx) => (
+                            <li key={idx} className="flex items-start gap-2">
+                              <span className="text-amber-400 mt-0.5">•</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {Array.isArray(aiSummaryData.estimatedTimestamps) && aiSummaryData.estimatedTimestamps.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t border-purple-500/20">
+                        <h4 className="font-bold text-purple-300 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-purple-400" />
+                          <span>チャプター・重要シーン (クリックでジャンプ):</span>
+                        </h4>
+                        <div className="flex flex-wrap gap-2">
+                          {aiSummaryData.estimatedTimestamps.map((ts, idx) => {
+                            const secs = (() => {
+                              const p = (ts.time || '0:00').split(':').map((x) => parseInt(x, 10));
+                              return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : (p[0] || 0) * 60 + (p[1] || 0);
+                            })();
+                            return (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => handleJumpToTime(secs)}
+                                className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-purple-600/30 text-purple-200 border border-purple-500/40 hover:border-purple-400 transition-colors flex items-center gap-1.5 cursor-pointer"
+                              >
+                                <span className="font-mono font-bold text-amber-300">{ts.time}</span>
+                                <span>{ts.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Transcript & Captions Panel */}
+            {showTranscript && (
+              <div className="bg-gradient-to-b from-teal-950/40 to-neutral-900 border border-emerald-500/40 rounded-xl p-4 text-xs space-y-3 animate-in fade-in duration-200 shadow-xl">
+                <div className="flex items-center justify-between border-b border-emerald-500/30 pb-2">
+                  <div className="flex items-center gap-2 text-emerald-300 font-bold">
+                    <FileText className="w-4 h-4 text-emerald-400" />
+                    <span className="text-sm">動画の字幕・音声文字起こしタイムライン</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTranscript(false)}
+                    className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {loadingTranscript && (
+                  <div className="flex flex-col items-center justify-center py-6 gap-3 text-neutral-300">
+                    <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+                    <span>タイムスタンプ付き字幕テキストを取得中...</span>
+                  </div>
+                )}
+
+                {transcriptError && (
+                  <div className="p-3 rounded-lg bg-neutral-800/80 border border-neutral-700 text-neutral-300">
+                    {transcriptError}
+                  </div>
+                )}
+
+                {transcriptData && (
+                  <div className="space-y-3">
+                    {/* Transcript Search Filter */}
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        type="text"
+                        value={transcriptSearch}
+                        onChange={(e) => setTranscriptSearch(e.target.value)}
+                        placeholder="文字起こし内を検索 (キーワード入力)..."
+                        className="w-full bg-neutral-950 border border-neutral-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+
+                    {/* Scrollable Transcript Segments */}
+                    <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1 divide-y divide-neutral-800">
+                      {Array.isArray(transcriptData.segments) && transcriptData.segments.length > 0 ? (
+                        transcriptData.segments
+                          .filter((seg) => !transcriptSearch || seg.text.toLowerCase().includes(transcriptSearch.toLowerCase()))
+                          .map((seg, idx) => {
+                            const min = Math.floor(seg.start / 60);
+                            const sec = Math.floor(seg.start % 60);
+                            const timeStr = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+                            return (
+                              <button
+                                key={idx}
+                                type="button"
+                                onClick={() => handleJumpToTime(seg.start)}
+                                className="w-full text-left py-1.5 px-2 rounded-lg hover:bg-emerald-500/10 hover:border-emerald-500/30 transition-colors flex items-start gap-2.5 cursor-pointer group"
+                              >
+                                <span className="font-mono text-[11px] font-bold text-emerald-400 group-hover:underline shrink-0 mt-0.5">
+                                  {timeStr}
+                                </span>
+                                <span className="text-neutral-200 group-hover:text-white leading-relaxed">
+                                  {seg.text}
+                                </span>
+                              </button>
+                            );
+                          })
+                      ) : transcriptData.fullText ? (
+                        <p className="whitespace-pre-line text-neutral-300 p-2 leading-relaxed">
+                          {transcriptData.fullText}
+                        </p>
+                      ) : (
+                        <p className="text-neutral-400 p-2">字幕テキストが見つかりませんでした。</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Comments & Live Chat Section */}

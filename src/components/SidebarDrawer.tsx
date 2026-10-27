@@ -16,6 +16,7 @@ import {
   LogOut,
   User,
   ShieldCheck,
+  Shield,
   Globe
 } from 'lucide-react';
 import { PlaybackMode } from '../types';
@@ -74,7 +75,7 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
               </div>
             </div>
             <span className="font-extrabold text-lg tracking-tight">
-              ZERO<span className="text-rose-500">-tube</span>
+              zero<span className="text-rose-500">-tube</span>
             </span>
           </div>
           <button
@@ -317,11 +318,52 @@ export const SidebarDrawer: React.FC<SidebarDrawerProps> = ({
               {playbackMode === 'tube613' && <span className="text-[10px] bg-emerald-500 text-white px-1.5 py-0.5 rounded">選択中</span>}
             </button>
           </div>
+
+          {/* Startup Animation Preview */}
+          <div className="space-y-1 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                setTimeout(() => {
+                  if (typeof (window as any).replaySiteIntro === 'function') {
+                    (window as any).replaySiteIntro();
+                  }
+                }, 180);
+              }}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold text-neutral-700 dark:text-neutral-200 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
+              title="YouTube風シネマティック起動アニメーションを再演します"
+            >
+              <div className="flex items-center gap-2.5">
+                <Play className="w-4 h-4 text-red-500 fill-red-500" />
+                <span>起動アニメーションを再演</span>
+              </div>
+              <span className="text-[10px] bg-red-500/15 text-red-500 dark:text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded font-bold">PRO</span>
+            </button>
+          </div>
+
+          {/* Admin Login Portal */}
+          <div className="space-y-1 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                window.dispatchEvent(new CustomEvent('zero_open_admin_modal'));
+              }}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 hover:text-neutral-900 dark:hover:text-white transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5">
+                <Shield className="w-4 h-4 text-red-500" />
+                <span>管理者ログイン</span>
+              </div>
+              <span className="text-[10px] bg-neutral-200 dark:bg-neutral-800 text-neutral-500 px-1.5 py-0.5 rounded">Admin</span>
+            </button>
+          </div>
         </div>
 
         {/* Footer */}
         <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-center">
-          <span className="text-[10px] text-neutral-400 font-mono">v2.0 (ZERO-tube)</span>
+          <span className="text-[10px] text-neutral-400 font-mono">v2.0 (zero-tube)</span>
         </div>
       </div>
     </div>

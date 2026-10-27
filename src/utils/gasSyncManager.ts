@@ -304,14 +304,575 @@ function refreshHtmlToDocs(appBaseUrl) {
     }
     return {
       success: true,
-      version: '2.8.0',
+      version: '3.1.0',
       syncedAt: new Date().toISOString()
     };
   } catch (e) {
     return { success: false, error: e.toString() };
   }
 }
+
+// 6. YouTube Data API v3 (Google公式 OAuth 連携 / 村上Tube)
+/**
+ * Scopes required by this script (Google Apps Script OAuth detection):
+ * @see https://www.googleapis.com/auth/youtube
+ * @see https://www.googleapis.com/auth/youtube.force-ssl
+ * @see https://www.googleapis.com/auth/youtube.readonly
+ * @see https://www.googleapis.com/auth/yt-analytics.readonly
+ * @see https://www.googleapis.com/auth/youtubepartner
+ * @see https://www.googleapis.com/auth/script.external_request
+ */
+function getGasYouTubeOAuthToken() {
+  try {
+    return ScriptApp.getOAuthToken();
+  } catch (err) {
+    Logger.log('OAuth token not available: ' + err);
+    return '';
+  }
+}
+
+function callGasYouTubeApi(endpoint, params, postBody) {
+  // If Advanced Service 'YouTube' is enabled in the GAS project
+  try {
+    if (typeof YouTube !== 'undefined' && YouTube) {
+      if (endpoint === 'search' && YouTube.Search && YouTube.Search.list) {
+        var sPart = (params && params.part) || 'snippet';
+        var copyS = {};
+        for (var sk in params) { if (sk !== 'part') copyS[sk] = params[sk]; }
+        return YouTube.Search.list(sPart, copyS);
+      }
+      if (endpoint === 'videos' && YouTube.Videos && YouTube.Videos.list) {
+        var vPart = (params && params.part) || 'snippet,contentDetails,statistics';
+        var copyV = {};
+        for (var vk in params) { if (vk !== 'part') copyV[vk] = params[vk]; }
+        return YouTube.Videos.list(vPart, copyV);
+      }
+      if (endpoint === 'commentThreads' && YouTube.CommentThreads) {
+        if (postBody && YouTube.CommentThreads.insert) {
+          var cPart = (params && params.part) || 'snippet';
+          return YouTube.CommentThreads.insert(postBody, cPart);
+        } else if (YouTube.CommentThreads.list) {
+          var clPart = (params && params.part) || 'snippet,replies';
+          var copyC = {};
+          for (var ck in params) { if (ck !== 'part') copyC[ck] = params[ck]; }
+          return YouTube.CommentThreads.list(clPart, copyC);
+        }
+      }
+      if (endpoint === 'playlistItems' && YouTube.PlaylistItems && YouTube.PlaylistItems.list) {
+        var piPart = (params && params.part) || 'snippet,contentDetails';
+        var copyPi = {};
+        for (var pik in params) { if (pik !== 'part') copyPi[pik] = params[pik]; }
+        return YouTube.PlaylistItems.list(piPart, copyPi);
+      }
+      if (endpoint === 'playlists' && YouTube.Playlists && YouTube.Playlists.list) {
+        var pPart = (params && params.part) || 'snippet,contentDetails';
+        var copyP = {};
+        for (var pk in params) { if (pk !== 'part') copyP[pk] = params[pk]; }
+        return YouTube.Playlists.list(pPart, copyP);
+      }
+    }
+  } catch (advErr) {
+    Logger.log('Advanced Service YouTube error: ' + advErr);
+  }
+
+  // Native REST call with ScriptApp.getOAuthToken()
+  var token = getGasYouTubeOAuthToken();
+  if (!token) return null;
+  var url = 'https://www.googleapis.com/youtube/v3/' + endpoint;
+  var queryParts = [];
+  for (var k in params) {
+    if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
+      queryParts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+  }
+  if (queryParts.length > 0) {
+    url += (url.indexOf('?') === -1 ? '?' : '&') + queryParts.join('&');
+  }
+  var options = {
+    method: postBody ? 'post' : 'get',
+    muteHttpExceptions: true,
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/json'
+    }
+  };
+  if (postBody) {
+    options.contentType = 'application/json';
+    options.payload = typeof postBody === 'string' ? postBody : JSON.stringify(postBody);
+  }
+  try {
+    var res = UrlFetchApp.fetch(url, options);
+    var code = res.getResponseCode();
+    var text = res.getContentText();
+    if (code >= 200 && code < 300) {
+      return JSON.parse(text);
+    }
+    Logger.log('YouTube API HTTP ' + code + ': ' + text);
+  } catch (err) {
+    Logger.log('YouTube API fetch failed: ' + err);
+  }
+  return null;
+}
+
+function callGasWorkerApi(endpoint, params) {
+  var url = 'https://proxy.wa0260966.workers.dev/api/v1/' + endpoint;
+  var queryParts = [];
+  for (var k in params) {
+    if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
+      queryParts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+  }
+  if (queryParts.length > 0) {
+    url += (url.indexOf('?') === -1 ? '?' : '&') + queryParts.join('&');
+  }
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: 'get',
+      muteHttpExceptions: true,
+      headers: { 'Accept': 'application/json' }
+    });
+    if (res.getResponseCode() === 200) {
+      return JSON.parse(res.getContentText());
+    }
+  } catch (e) {}
+  return null;
+}
+
+function parseGasQueryString(str) {
+  var map = {};
+  if (!str) return map;
+  var pairs = str.split('&');
+  for (var i = 0; i < pairs.length; i++) {
+    var p = pairs[i].split('=');
+    if (p.length === 2) {
+      map[decodeURIComponent(p[0])] = decodeURIComponent(p[1]);
+    }
+  }
+  return map;
+}
+
+function handleGasApiRequest(urlStr, method, headersMap, bodyStr) {
+  method = (method || 'GET').toUpperCase();
+  var parsed = String(urlStr).split('?');
+  var path = parsed[0];
+  var query = parseGasQueryString(parsed[1] || '');
+
+  try {
+    // 1. Search & Shorts (/api/youtube/search, /api/youtube/shorts)
+    if (path === '/api/youtube/search' || path === '/api/youtube/shorts') {
+      var isShorts = path.indexOf('shorts') !== -1;
+      var rawQ = query.q || (isShorts ? '#Shorts' : '人気 動画');
+      var q = isShorts && rawQ.indexOf('#') === -1 ? rawQ + ' #shorts' : rawQ;
+      var limit = query.maxResults || '25';
+      var pageToken = query.pageToken || '';
+
+      // Try official YouTube Data API v3 with user OAuth token
+      var ytData = callGasYouTubeApi('search', {
+        part: 'snippet',
+        q: q,
+        type: 'video',
+        maxResults: limit,
+        pageToken: pageToken
+      });
+
+      if (ytData && Array.isArray(ytData.items) && ytData.items.length > 0) {
+        var ids = [];
+        for (var i = 0; i < ytData.items.length; i++) {
+          var vid = ytData.items[i].id && ytData.items[i].id.videoId ? ytData.items[i].id.videoId : ytData.items[i].id;
+          if (vid && typeof vid === 'string') ids.push(vid);
+        }
+        if (ids.length > 0) {
+          try {
+            var vEnrich = callGasYouTubeApi('videos', {
+              part: 'contentDetails,statistics',
+              id: ids.join(',')
+            });
+            if (vEnrich && Array.isArray(vEnrich.items)) {
+              var vMap = {};
+              for (var j = 0; j < vEnrich.items.length; j++) {
+                vMap[vEnrich.items[j].id] = vEnrich.items[j];
+              }
+              for (var k = 0; k < ytData.items.length; k++) {
+                var itVid = ytData.items[k].id && ytData.items[k].id.videoId ? ytData.items[k].id.videoId : ytData.items[k].id;
+                if (vMap[itVid]) {
+                  ytData.items[k].contentDetails = vMap[itVid].contentDetails;
+                  ytData.items[k].statistics = vMap[itVid].statistics;
+                }
+              }
+            }
+          } catch (enrErr) {}
+        }
+        return { status: 200, data: ytData };
+      }
+
+      // Fallback: InnerTube Worker
+      var wData = callGasWorkerApi('search', { q: q, limit: limit, continuation: pageToken });
+      if (wData && Array.isArray(wData.results)) {
+        return {
+          status: 200,
+          data: {
+            kind: 'youtube#searchResponse',
+            items: wData.results,
+            nextPageToken: wData.continuation || null
+          }
+        };
+      }
+    }
+
+    // 2. Video Detail (/api/youtube/video/:id)
+    if (path.indexOf('/api/youtube/video/') === 0) {
+      var vId = decodeURIComponent(path.replace('/api/youtube/video/', ''));
+      var vRes = callGasYouTubeApi('videos', {
+        part: 'snippet,contentDetails,statistics',
+        id: vId
+      });
+      if (vRes && Array.isArray(vRes.items) && vRes.items.length > 0) {
+        var relTitle = vRes.items[0].snippet ? vRes.items[0].snippet.title : '';
+        var relRes = callGasYouTubeApi('search', {
+          part: 'snippet',
+          type: 'video',
+          q: relTitle ? relTitle.slice(0, 40) : '',
+          maxResults: 15
+        });
+        return {
+          status: 200,
+          data: {
+            kind: 'youtube#videoListResponse',
+            items: vRes.items,
+            relatedItems: relRes && relRes.items ? relRes.items : []
+          }
+        };
+      }
+      var wVid = callGasWorkerApi('videos/' + vId, {});
+      if (wVid) {
+        return {
+          status: 200,
+          data: {
+            kind: 'youtube#videoListResponse',
+            items: [wVid],
+            relatedItems: wVid.recommendedVideos || []
+          }
+        };
+      }
+    }
+
+    // 2b. Related Videos (/api/youtube/related/:id)
+    if (path.indexOf('/api/youtube/related/') === 0) {
+      var relVid = decodeURIComponent(path.replace('/api/youtube/related/', ''));
+      var rawRelQ = query.q || '';
+      var relQ = (rawRelQ && rawRelQ !== 'YouTube Video' && rawRelQ !== 'YouTube Short') ? rawRelQ : '';
+      if (!relQ) {
+        var vInfo = callGasYouTubeApi('videos', { part: 'snippet', id: relVid });
+        if (vInfo && Array.isArray(vInfo.items) && vInfo.items[0] && vInfo.items[0].snippet) {
+          relQ = vInfo.items[0].snippet.title || '';
+        }
+      }
+      var cleanRelQ = (relQ || '人気 動画').replace(/【.*?】|\[.*?\]|\(.*?\)|（.*?）|#\S+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 45) || '人気 動画';
+      var sRel = callGasYouTubeApi('search', {
+        part: 'snippet',
+        type: 'video',
+        q: cleanRelQ,
+        maxResults: 24,
+        pageToken: query.pageToken || ''
+      });
+      if (sRel && Array.isArray(sRel.items) && sRel.items.length > 0) {
+        return { status: 200, data: sRel };
+      }
+      var wRel = callGasWorkerApi('videos/' + relVid, {});
+      if (wRel && (Array.isArray(wRel.recommendedVideos) || Array.isArray(wRel.relatedVideos))) {
+        return {
+          status: 200,
+          data: {
+            kind: 'youtube#searchResponse',
+            items: wRel.recommendedVideos || wRel.relatedVideos || [],
+            nextPageToken: null
+          }
+        };
+      }
+    }
+
+    // 3. Trending (/api/youtube/trending)
+    if (path === '/api/youtube/trending') {
+      var tRes = callGasYouTubeApi('videos', {
+        part: 'snippet,contentDetails,statistics',
+        chart: 'mostPopular',
+        regionCode: 'JP',
+        maxResults: 28
+      });
+      if (tRes && Array.isArray(tRes.items) && tRes.items.length > 0) {
+        return { status: 200, data: tRes };
+      }
+      var wTrend = callGasWorkerApi('trending', {});
+      if (Array.isArray(wTrend)) {
+        return { status: 200, data: { kind: 'youtube#videoListResponse', items: wTrend } };
+      }
+    }
+
+    // 4. Comments (/api/youtube/comments/:id)
+    if (path.indexOf('/api/youtube/comments/') === 0) {
+      var cVid = decodeURIComponent(path.replace('/api/youtube/comments/', ''));
+      if (method === 'POST') {
+        var parsedBody = {};
+        try {
+          parsedBody = typeof bodyStr === 'string' ? JSON.parse(bodyStr) : (bodyStr || {});
+        } catch (e) {}
+        var textContent = parsedBody.text || parsedBody.content || '';
+        if (textContent) {
+          var postRes = callGasYouTubeApi('commentThreads', { part: 'snippet' }, {
+            snippet: {
+              videoId: cVid,
+              topLevelComment: {
+                snippet: {
+                  textOriginal: textContent
+                }
+              }
+            }
+          });
+          if (postRes && postRes.id) {
+            return { status: 200, data: { success: true, item: postRes } };
+          }
+        }
+      } else {
+        var cRes = callGasYouTubeApi('commentThreads', {
+          part: 'snippet,replies',
+          videoId: cVid,
+          maxResults: 50,
+          order: query.order || 'relevance',
+          pageToken: query.pageToken || ''
+        });
+        if (cRes && Array.isArray(cRes.items)) {
+          return { status: 200, data: cRes };
+        }
+        var wComm = callGasWorkerApi('comments/' + cVid, { limit: '30', continuation: query.pageToken || '' });
+        if (wComm && Array.isArray(wComm.comments)) {
+          return {
+            status: 200,
+            data: {
+              items: wComm.comments.map(function(c) {
+                return {
+                  id: c.commentId || c.id,
+                  snippet: {
+                    videoId: cVid,
+                    topLevelComment: {
+                      id: c.commentId || c.id,
+                      snippet: {
+                        authorDisplayName: c.author || 'YouTube ユーザー',
+                        authorProfileImageUrl: c.authorThumbnail || '',
+                        textDisplay: c.contentHtml || c.content || '',
+                        textOriginal: c.content || '',
+                        likeCount: c.likeCount || 0,
+                        publishedAt: c.publishedText || new Date().toISOString()
+                      }
+                    }
+                  }
+                };
+              }),
+              nextPageToken: wComm.continuation || null
+            }
+          };
+        }
+      }
+    }
+
+    // 5. Autocomplete Suggestions (/api/youtube/suggest, /api/youtube/suggestions)
+    if (path === '/api/youtube/suggest' || path === '/api/youtube/suggestions') {
+      var sQ = query.q || '';
+      if (!sQ) return { status: 200, data: { suggestions: [] } };
+      var sUrl = 'https://suggestqueries.google.com/complete/search?client=firefox&hl=ja&gl=jp&ds=yt&q=' + encodeURIComponent(sQ);
+      var sRes = UrlFetchApp.fetch(sUrl, { muteHttpExceptions: true });
+      if (sRes.getResponseCode() === 200) {
+        var sParsed = JSON.parse(sRes.getContentText() || '[]');
+        if (Array.isArray(sParsed) && Array.isArray(sParsed[1])) {
+          return { status: 200, data: { suggestions: sParsed[1] } };
+        }
+      }
+      return { status: 200, data: { suggestions: [] } };
+    }
+
+    // 6. Direct Audio Stream Extractor (/api/youtube/audio/:id)
+    if (path.indexOf('/api/youtube/audio/') === 0) {
+      var aVid = decodeURIComponent(path.replace('/api/youtube/audio/', ''));
+      var aData = callGasWorkerApi('audio/' + aVid, {});
+      if (aData) return { status: 200, data: aData };
+    }
+
+    // 7. Structured Transcript & Captions (/api/youtube/transcript/:id)
+    if (path.indexOf('/api/youtube/transcript/') === 0 || path.indexOf('/api/youtube/captions/') === 0) {
+      var tVid = decodeURIComponent(path.replace('/api/youtube/transcript/', '').replace('/api/youtube/captions/', ''));
+      var trData = callGasWorkerApi('transcript/' + tVid, { lang: query.lang || 'ja' });
+      if (trData) return { status: 200, data: trData };
+    }
+
+    // 8. Playlists (/api/youtube/playlist/:id)
+    if (path.indexOf('/api/youtube/playlist/') === 0) {
+      var plId = decodeURIComponent(path.replace('/api/youtube/playlist/', ''));
+      var pItems = callGasYouTubeApi('playlistItems', {
+        part: 'snippet,contentDetails',
+        playlistId: plId,
+        maxResults: 50,
+        pageToken: query.pageToken || ''
+      });
+      var pMeta = callGasYouTubeApi('playlists', {
+        part: 'snippet',
+        id: plId
+      });
+      if (pItems && Array.isArray(pItems.items)) {
+        return {
+          status: 200,
+          data: {
+            playlist: pMeta && pMeta.items && pMeta.items[0] ? pMeta.items[0] : { id: plId },
+            items: pItems.items,
+            nextPageToken: pItems.nextPageToken || null
+          }
+        };
+      }
+      var wPl = callGasWorkerApi('playlists/' + plId, {});
+      if (wPl && Array.isArray(wPl.videos)) {
+        return {
+          status: 200,
+          data: {
+            playlist: { id: plId, snippet: { title: wPl.title || '再生リスト', channelTitle: wPl.author || '' } },
+            items: wPl.videos,
+            nextPageToken: null
+          }
+        };
+      }
+    }
+
+    // 9. Channel Videos (/api/youtube/channel/videos/:id)
+    if (path.indexOf('/api/youtube/channel/videos/') === 0) {
+      var chId = decodeURIComponent(path.replace('/api/youtube/channel/videos/', ''));
+      var chVids = callGasYouTubeApi('search', {
+        part: 'snippet',
+        channelId: chId,
+        type: 'video',
+        order: 'date',
+        maxResults: 30
+      });
+      if (chVids && Array.isArray(chVids.items)) {
+        return { status: 200, data: chVids };
+      }
+      var wChVids = callGasWorkerApi('channels/' + chId + '/videos', {});
+      if (wChVids && Array.isArray(wChVids.videos)) {
+        return { status: 200, data: { items: wChVids.videos } };
+      }
+    }
+
+    // 10. Channel Shorts (/api/youtube/channel/shorts/:id)
+    if (path.indexOf('/api/youtube/channel/shorts/') === 0) {
+      var chShortId = decodeURIComponent(path.replace('/api/youtube/channel/shorts/', ''));
+      var chShorts = callGasYouTubeApi('search', {
+        part: 'snippet',
+        channelId: chShortId,
+        q: '#shorts',
+        type: 'video',
+        maxResults: 30
+      });
+      if (chShorts && Array.isArray(chShorts.items)) {
+        return { status: 200, data: chShorts };
+      }
+    }
+
+    // 11. Channel Playlists (/api/youtube/channel/playlists/:id)
+    if (path.indexOf('/api/youtube/channel/playlists/') === 0) {
+      var chPlId = decodeURIComponent(path.replace('/api/youtube/channel/playlists/', ''));
+      var chPls = callGasYouTubeApi('playlists', {
+        part: 'snippet,contentDetails',
+        channelId: chPlId,
+        maxResults: 50
+      });
+    // 12. Stream Sources & Resolution (/api/youtube/stream/:id, /api/youtube/stream-sources/:id, /api/youtube/stream-ytdlp/:id)
+    if (path.indexOf('/api/youtube/stream/') === 0 || path.indexOf('/api/youtube/stream-sources/') === 0 || path.indexOf('/api/youtube/stream-ytdlp/') === 0) {
+      var sVid = decodeURIComponent(path.replace('/api/youtube/stream/', '').replace('/api/youtube/stream-sources/', '').replace('/api/youtube/stream-ytdlp/', ''));
+      var wVidStream = callGasWorkerApi('videos/' + sVid, {});
+      if (wVidStream) {
+        var formats = Array.isArray(wVidStream.formatStreams) ? wVidStream.formatStreams : [];
+        var adaptive = Array.isArray(wVidStream.adaptiveFormats) ? wVidStream.adaptiveFormats : [];
+        var comb720 = '';
+        var comb360 = '';
+        for (var fi = 0; fi < formats.length; fi++) {
+          var f = formats[fi];
+          if ((f.resolution === '720p' || f.qualityLabel === '720p') && !comb720) comb720 = f.url;
+          if ((f.resolution === '360p' || f.qualityLabel === '360p' || String(f.itag) === '18') && !comb360) comb360 = f.url;
+        }
+        if (!comb360 && formats[0]) comb360 = formats[0].url;
+
+        var v1080 = '';
+        var v720 = comb720;
+        var v360 = comb360;
+        var aud = '';
+        for (var ai = 0; ai < adaptive.length; ai++) {
+          var af = adaptive[ai];
+          if ((af.resolution === '1080p' || af.qualityLabel === '1080p') && !v1080) v1080 = af.url;
+          if ((af.resolution === '720p' || af.qualityLabel === '720p') && !v720) v720 = af.url;
+          if ((af.type || '').indexOf('audio') !== -1 && !aud) aud = af.url;
+        }
+        return {
+          status: 200,
+          data: {
+            videoId: sVid,
+            title: wVidStream.title || 'video-' + sVid,
+            engine: 'gas-worker',
+            streams: {
+              v1080: v1080 || v720 || v360,
+              v720: v720 || v360 || v1080,
+              v360: v360 || v720,
+              audio: aud || v360,
+              combined720: comb720,
+              combined360: comb360,
+              rawV1080: v1080,
+              rawV720: v720,
+              rawV360: comb360 || v360,
+              rawAudio: aud,
+              ytdlp1080: v1080 || comb360,
+              ytdlp720: comb720 || v720 || comb360,
+              ytdlp360: comb360 || v360,
+              ytdlpAudio: aud || comb360
+            }
+          }
+        };
+      }
+    }
+  } catch (err) {
+    Logger.log('handleGasApiRequest error: ' + err);
+  }
+
+  return { status: 200, data: { items: [], error: 'NOT_FOUND' } };
+}
 `;
+}
+
+/**
+ * Generate appsscript.json manifest with YouTube Data API v3 scopes matching authorized Google Account permissions ("村上Tube")
+ */
+export function generateGasManifest(): string {
+  return JSON.stringify({
+    timeZone: 'Asia/Tokyo',
+    dependencies: {
+      enabledAdvancedServices: [
+        {
+          userSymbol: 'YouTube',
+          serviceId: 'youtube',
+          version: 'v3'
+        }
+      ]
+    },
+    webapp: {
+      executeAs: 'USER_DEPLOYING',
+      access: 'ANYONE'
+    },
+    oauthScopes: [
+      'https://www.googleapis.com/auth/youtube',
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+      'https://www.googleapis.com/auth/youtube.readonly',
+      'https://www.googleapis.com/auth/yt-analytics.readonly',
+      'https://www.googleapis.com/auth/youtubepartner',
+      'https://www.googleapis.com/auth/script.external_request',
+      'https://www.googleapis.com/auth/script.send_mail'
+    ],
+    exceptionLogging: 'STACKDRIVER',
+    runtimeVersion: 'V8'
+  }, null, 2);
 }
 
 /**

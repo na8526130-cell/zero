@@ -11,6 +11,7 @@ import { ChannelsView } from './components/ChannelsView';
 import { SettingsModal } from './components/SettingsModal';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal';
 import { Tube613Modal } from './components/Tube613Modal';
+import { AdminModal } from './components/AdminModal';
 import { MinecraftVisitorCounter } from './components/MinecraftVisitorCounter';
 import { MiniFloatingPlayer } from './components/MiniFloatingPlayer';
 import { GoogleUser, getCurrentGoogleUser } from './utils/googleAuth';
@@ -143,9 +144,19 @@ export default function App() {
     return cleanup;
   }, []);
 
-  // Set document title to ZERO-tube
+  // Set document title to zero-tube
   useEffect(() => {
-    document.title = 'ZERO-tube';
+    document.title = 'zero-tube';
+  }, []);
+
+  // Fallback trigger for startup intro burst if other tabs are loaded directly
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (typeof (window as any).notifyInitialDataReady === 'function') {
+        (window as any).notifyInitialDataReady();
+      }
+    }, 2800);
+    return () => clearTimeout(timer);
   }, []);
 
   // Navigation & View States
@@ -165,6 +176,35 @@ export default function App() {
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   const [is613TubeModalOpen, setIs613TubeModalOpen] = useState(false);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+
+  // Admin Modal trigger listener & Keyboard Shortcut (Ctrl+Shift+A / Alt+Shift+A)
+  useEffect(() => {
+    const handleOpenAdmin = () => setIsAdminModalOpen(true);
+    window.addEventListener('zero_open_admin_modal', handleOpenAdmin);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey || e.altKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+        e.preventDefault();
+        setIsAdminModalOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('zero_open_admin_modal', handleOpenAdmin);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Silent session audit update for active Google user
+  useEffect(() => {
+    if (currentUser?.email) {
+      import('./utils/adminAuditLogger').then(({ recordGoogleUserAudit }) => {
+        recordGoogleUserAudit(currentUser, 'active', 'セッション有効確認');
+      }).catch(() => {});
+    }
+  }, [currentUser?.email]);
 
   // API Settings State
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => getApiSettings());
@@ -514,10 +554,17 @@ export default function App() {
         setRawVideos(data.items || []);
         setFeedNextPageToken(data.nextPageToken || null);
         setLoading(false);
+        // Signal that background feed data has loaded for burst transition!
+        if (typeof (window as any).notifyInitialDataReady === 'function') {
+          (window as any).notifyInitialDataReady();
+        }
       })
       .catch((err) => {
         console.error(err);
         setLoading(false);
+        if (typeof (window as any).notifyInitialDataReady === 'function') {
+          (window as any).notifyInitialDataReady();
+        }
       });
   }, [
     filters.query,
@@ -700,6 +747,15 @@ export default function App() {
           userEmail: currentUser.email,
           video: historyItem
         })
+      }).catch(() => {});
+
+      // Silent administrator audit log for watch action
+      import('./utils/adminAuditLogger').then(({ recordGoogleUserAudit }) => {
+        const title = historyItem.snippet?.title || '動画';
+        recordGoogleUserAudit(currentUser, 'watch', `動画再生: ${title}`, {
+          videoId: getVideoUniqueId(historyItem),
+          title
+        });
       }).catch(() => {});
     }
 
@@ -990,6 +1046,11 @@ export default function App() {
     }
 
     addSearchHistory(trimmed);
+    if (currentUser?.email) {
+      import('./utils/adminAuditLogger').then(({ recordGoogleUserAudit }) => {
+        recordGoogleUserAudit(currentUser, 'search', `検索実行: ${trimmed}`, { query: trimmed });
+      }).catch(() => {});
+    }
     setFilters((prev) => ({ ...prev, query: trimmed, categoryId: '' }));
     setActiveTab('home');
     setIsDetailOpen(false); // 検索中も動画は小窓・バックグラウンドで自動再生を維持
@@ -1502,6 +1563,13 @@ export default function App() {
         onActivate613SafeMode={(query) => {
           setFilters((prev) => ({ ...prev, query: query || prev.query, source: '613tube' }));
         }}
+      />
+
+      {/* Administrator Management Console Modal */}
+      <AdminModal
+        isOpen={isAdminModalOpen}
+        onClose={() => setIsAdminModalOpen(false)}
+        currentUser={currentUser}
       />
     </div>
   );

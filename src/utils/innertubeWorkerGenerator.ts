@@ -1298,21 +1298,117 @@ export default {
         return jsonResponse({ comments, continuation: null, isLiveChat: false });
       }
 
-      // 7. Suggestions (/api/v1/suggestions)
-      if (path === '/api/v1/suggestions') {
+      // 7. Suggestions Autocomplete (/api/v1/suggestions, /api/youtube/suggest)
+      if (path === '/api/v1/suggestions' || path === '/api/youtube/suggest') {
         const q = url.searchParams.get('q') || '';
         if (!q) return jsonResponse({ suggestions: [] });
-        const sugUrl = \`https://suggestqueries-clients6.youtube.com/complete/search?client=firefox&hl=ja&gl=jp&ds=yt&q=\${encodeURIComponent(q)}\`;
-        const res = await fetch(sugUrl);
-        const parsed = await res.json().catch(() => null);
-        if (Array.isArray(parsed?.[1])) {
-          const suggestions = parsed[1].map((item) => (Array.isArray(item) ? item[0] : item)).filter(Boolean);
-          return jsonResponse({ suggestions });
-        }
+        const sugUrl = \`https://suggestqueries.google.com/complete/search?client=firefox&hl=ja&gl=jp&ds=yt&q=\${encodeURIComponent(q)}\`;
+        try {
+          const res = await fetch(sugUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+          });
+          const parsed = await res.json().catch(() => null);
+          if (Array.isArray(parsed?.[1])) {
+            const suggestions = parsed[1].map((item) => (Array.isArray(item) ? item[0] : item)).filter(Boolean);
+            return jsonResponse({ suggestions });
+          }
+        } catch {}
         return jsonResponse({ suggestions: [] });
       }
 
-      // 8. Subtitles WebVTT (/api/subtitles/:id)
+      // 8. Structured Transcript & Captions Endpoint (/api/v1/transcript/:id, /api/v1/captions/:id)
+      const transcriptMatch = path.match(/^\\/api\\/v1\\/(transcript|captions)\\/([^/]+)$/);
+      if (transcriptMatch) {
+        const videoId = decodeURIComponent(transcriptMatch[2]);
+        const lang = url.searchParams.get('lang') || 'ja';
+        const playerRes = await callInnerTube('player', { videoId }, 'IOS').catch(() => callInnerTube('player', { videoId }, 'WEB'));
+        const tracks = playerRes?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+        const track =
+          tracks.find((t) => t.languageCode === lang) ||
+          tracks.find((t) => t.languageCode?.startsWith(lang)) ||
+          tracks.find((t) => t.languageCode === 'en') ||
+          tracks[0];
+
+        if (!track || !track.baseUrl) {
+          return jsonResponse({ videoId, language: lang, fullText: '', segments: [] });
+        }
+
+        const vttUrl = track.baseUrl.includes('fmt=vtt') ? track.baseUrl : \`\${track.baseUrl}&fmt=vtt\`;
+        let vttText = '';
+        try {
+          const vttRes = await fetch(vttUrl);
+          vttText = await vttRes.text();
+        } catch {
+          return jsonResponse({ videoId, language: lang, fullText: '', segments: [] });
+        }
+
+        const segments = [];
+        const lines = vttText.split(/\\r?\\n/);
+        let currentSeg = null;
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          const timeMatch = line.match(/^(\\d{2}:)?(\\d{2}):(\\d{2})\\.(\\d{3})\\s*-->\\s*(\\d{2}:)?(\\d{2}):(\\d{2})\\.(\\d{3})/);
+          if (timeMatch) {
+            const startH = timeMatch[1] ? parseInt(timeMatch[1], 10) : 0;
+            const startM = parseInt(timeMatch[2], 10);
+            const startS = parseInt(timeMatch[3], 10);
+            const startMs = parseInt(timeMatch[4], 10);
+            const startSec = startH * 3600 + startM * 60 + startS + startMs / 1000;
+
+            const endH = timeMatch[5] ? parseInt(timeMatch[5], 10) : 0;
+            const endM = parseInt(timeMatch[6], 10);
+            const endS = parseInt(timeMatch[7], 10);
+            const endMs = parseInt(timeMatch[8], 10);
+            const endSec = endH * 3600 + endM * 60 + endS + endMs / 1000;
+
+            currentSeg = { start: startSec, duration: Math.max(0.5, endSec - startSec), text: '' };
+            segments.push(currentSeg);
+          } else if (currentSeg && line && !line.startsWith('NOTE') && !line.startsWith('WEBVTT') && !line.match(/^\\d+$/)) {
+            const cleanLine = line.replace(/<[^>]+>/g, '').trim();
+            if (cleanLine) {
+              currentSeg.text = currentSeg.text ? \`\${currentSeg.text} \${cleanLine}\` : cleanLine;
+            }
+          }
+        }
+
+        const fullText = segments.map((s) => s.text).filter(Boolean).join(' ');
+        return jsonResponse({
+          videoId,
+          language: track.languageCode || lang,
+          label: getText(track.name) || track.languageCode,
+          fullText,
+          segments
+        });
+      }
+
+      // 9. Audio-only Stream Extractor Endpoint (/api/v1/audio/:id)
+      const audioMatch = path.match(/^\\/api\\/v1\\/audio\\/([^/]+)$/);
+      if (audioMatch) {
+        const videoId = decodeURIComponent(audioMatch[1]);
+        const playerRes = await callInnerTube('player', { videoId }, 'IOS').catch(() => callInnerTube('player', { videoId }, 'WEB'));
+        const streamingData = playerRes?.streamingData || {};
+        const audios = (streamingData.adaptiveFormats || []).filter((f) => (f.mimeType || '').startsWith('audio/'));
+        audios.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        const best = audios[0];
+        if (best && best.url) {
+          return jsonResponse({
+            videoId,
+            title: playerRes?.videoDetails?.title || '',
+            author: playerRes?.videoDetails?.author || '',
+            audioUrl: best.url,
+            mimeType: best.mimeType,
+            bitrate: best.bitrate,
+            audioQuality: best.audioQuality || 'AUDIO_QUALITY_MEDIUM',
+            proxyUrl: \`/api/v1/stream-proxy?url=\${encodeURIComponent(best.url)}\`
+          });
+        }
+        return jsonResponse({ error: 'Audio stream not found' }, 404);
+      }
+
+      // 10. Subtitles WebVTT (/api/subtitles/:id)
       const subMatch = path.match(/^\\/api\\/subtitles\\/([^/]+)$/);
       if (subMatch) {
         const videoId = decodeURIComponent(subMatch[1]);

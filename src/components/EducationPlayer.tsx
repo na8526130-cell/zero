@@ -596,35 +596,47 @@ export const EducationPlayer: React.FC<EducationPlayerProps> = ({
     setShowEduUnmutePrompt(false);
 
     const initEduSystem = async () => {
-      try {
-        // Step 1: バックエンドAPIからYouTube Education用URLを取得 (/api/stream/youtubeeducation/{videoId})
-        const rawUrl = await fetchEducationStreamUrl(videoId);
-        if (isCancelled) return;
+      const targetSec = Math.max(0, Math.floor(startTime));
 
-        // Step 2: Googleスプレッドシートから動的スクリプト・設定を取得 (A1: 追加パラメータ, A2: Player APIコード)
+      // 1. Immediately ensure eduUrl is set so the iframe renders instantly without waiting for network requests
+      const initialEmbedUrl = createYoutubeEducationEmbedUrl(videoId, eduParam || undefined, {
+        autoplay: true,
+        start: targetSec,
+        origin: typeof window !== 'undefined' ? window.location.origin : ''
+      });
+      setEduUrl((prev) => (prev && prev.includes(videoId) ? prev : initialEmbedUrl));
+
+      try {
+        // Step 1: Googleスプレッドシートから動的スクリプト・設定を取得 (A1: 追加パラメータ, A2: Player APIコード)
+        // fetchSpreadsheetEducationConfig uses localStorage caching and verified fallback DEFAULT_EDU_PARAMETER
         const config = await fetchSpreadsheetEducationConfig();
         if (isCancelled) return;
 
         setEduParam(config.parameterText);
         setEduParamLoaded(true);
 
-        const targetSec = Math.max(0, Math.floor(startTime));
-        // Build normalized YouTube Education embed URL with widgetid=1, origin, and forigin
-        // so YT.Player and postMessage widget bridge always receive onReady & onStateChange(0)
         const finalUrl = createYoutubeEducationEmbedUrl(videoId, config.parameterText, {
           autoplay: true,
           start: targetSec,
           origin: typeof window !== 'undefined' ? window.location.origin : ''
         });
 
-        setEduUrl(finalUrl);
-        setEduLoading(false);
+        if (!isCancelled) {
+          setEduUrl(finalUrl);
+          setEduLoading(false);
+        }
 
-        // Step 3: IFrame Player APIスクリプトの動的注入 (<script id="youtube-education-widget-api">)
-        const YT = await injectEducationPlayerApi(config.widgetApiSource);
+        // Step 2: IFrame Player APIスクリプトの動的注入 (try/catch: 失敗してもiframe単体で再生可能なためエラーにしない)
+        let YT: any = null;
+        try {
+          YT = await injectEducationPlayerApi(config.widgetApiSource);
+        } catch (apiErr) {
+          console.warn('[EducationPlayer] YT Player API injection skipped/timed out, continuing with direct iframe postMessage:', apiErr);
+        }
+
         if (isCancelled) return;
 
-        // Step 4: iframe要素がマウントされるのを待機して YT.Player をバインド + 段階的リトライ (0ms, 120ms, 400ms, 1000ms)
+        // Step 3: iframe要素がマウントされるのを待機して段階的リトライ (0ms, 120ms, 400ms, 1000ms)
         const scheduleEduAutoplay = () => {
           clearEduAutoplayTimers();
           [0, 120, 400, 1000].forEach((delay) => {
@@ -654,89 +666,94 @@ export const EducationPlayer: React.FC<EducationPlayerProps> = ({
           });
         };
 
-        setTimeout(() => {
-          if (isCancelled || !eduIframeRef.current) return;
+        // Always trigger postMessage autoplay
+        scheduleEduAutoplay();
 
-          if (eduPlayerRef.current) {
+        // Step 4: YT.Player が利用可能な場合はバインド
+        if (YT && typeof YT.Player === 'function') {
+          setTimeout(() => {
+            if (isCancelled || !eduIframeRef.current) return;
+
+            if (eduPlayerRef.current) {
+              try {
+                eduPlayerRef.current.destroy();
+              } catch {}
+              eduPlayerRef.current = null;
+            }
+
             try {
-              eduPlayerRef.current.destroy();
-            } catch {}
-            eduPlayerRef.current = null;
-          }
+              const player = new YT.Player(eduIframeRef.current, {
+                events: {
+                  onReady: (event: any) => {
+                    if (isCancelled) return;
+                    eduPlayerRef.current = event.target;
 
-          try {
-            const player = new YT.Player(eduIframeRef.current, {
-              events: {
-                onReady: (event: any) => {
-                  if (isCancelled) return;
-                  eduPlayerRef.current = event.target;
+                    try {
+                      if (targetSec > 0) {
+                        try {
+                          event.target.seekTo(targetSec, true);
+                        } catch {}
+                      }
+                      event.target.unMute();
+                      event.target.playVideo();
+                      scheduleEduAutoplay();
+                      setShowEduUnmutePrompt(false);
 
-                  try {
-                    if (targetSec > 0) {
-                      try {
-                        event.target.seekTo(targetSec, true);
-                      } catch {}
+                      // Fallback: if browser blocks unmuted autoplay, retry muted after 600ms
+                      setTimeout(() => {
+                        if (isCancelled || !eduPlayerRef.current) return;
+                        try {
+                          const state =
+                            typeof event.target.getPlayerState === 'function'
+                              ? event.target.getPlayerState()
+                              : 1;
+                          if (state !== 1 && state !== 3 && state !== 0) {
+                            event.target.mute();
+                            event.target.playVideo();
+                            setShowEduUnmutePrompt(true);
+                          }
+                        } catch {}
+                      }, 600);
+                    } catch (e) {
+                      console.warn('[EducationPlayer] Autoplay call error:', e);
                     }
-                    event.target.unMute();
-                    event.target.playVideo();
-                    scheduleEduAutoplay();
-                    setShowEduUnmutePrompt(false);
-
-                    // Fallback: if browser blocks unmuted autoplay, retry muted after 600ms
-                    setTimeout(() => {
-                      if (isCancelled || !eduPlayerRef.current) return;
+                  },
+                  onStateChange: (event: any) => {
+                    if (isCancelled) return;
+                    if (event.data === 1) {
+                      clearEduAutoplayTimers();
+                      hasEndedRef.current = false;
+                      setIsPlayingEdu(true);
                       try {
-                        const state =
-                          typeof event.target.getPlayerState === 'function'
-                            ? event.target.getPlayerState()
-                            : 1;
-                        // state !== 1 (PLAYING) and state !== 3 (BUFFERING)
-                        if (state !== 1 && state !== 3 && state !== 0) {
-                          event.target.mute();
-                          event.target.playVideo();
-                          setShowEduUnmutePrompt(true);
+                        if (event.target.isMuted && !event.target.isMuted()) {
+                          setShowEduUnmutePrompt(false);
                         }
                       } catch {}
-                    }, 600);
-                  } catch (e) {
-                    console.warn('[EducationPlayer] Autoplay call error:', e);
+                    } else if (event.data === 2) {
+                      setIsPlayingEdu(false);
+                    } else if (event.data === 5 || event.data === -1) {
+                      try {
+                        event.target.playVideo();
+                      } catch {}
+                    } else if (event.data === 0) {
+                      triggerEndedOnce();
+                    }
+                  },
+                  onError: (event: any) => {
+                    console.warn('YouTube Education Player API error:', event.data);
                   }
-                },
-                onStateChange: (event: any) => {
-                  if (isCancelled) return;
-                  // 1 = PLAYING, 5 = CUED, 0 = ENDED
-                  if (event.data === 1) {
-                    clearEduAutoplayTimers();
-                    hasEndedRef.current = false;
-                    try {
-                      if (event.target.isMuted && !event.target.isMuted()) {
-                        setShowEduUnmutePrompt(false);
-                      }
-                    } catch {}
-                  } else if (event.data === 5 || event.data === -1) {
-                    try {
-                      event.target.playVideo();
-                    } catch {}
-                  } else if (event.data === 0) {
-                    // 動画終了時に次の動画の自動再生またはループを呼び出す
-                    triggerEndedOnce();
-                  }
-                },
-                onError: (event: any) => {
-                  console.warn('YouTube Education Player API error:', event.data);
                 }
-              }
-            });
+              });
 
-            eduPlayerRef.current = player;
-          } catch (bindErr) {
-            console.warn('[EducationPlayer] Error creating YT.Player instance:', bindErr);
-          }
-        }, 100);
+              eduPlayerRef.current = player;
+            } catch (bindErr) {
+              console.warn('[EducationPlayer] Error creating YT.Player instance:', bindErr);
+            }
+          }, 100);
+        }
       } catch (err: any) {
         if (!isCancelled) {
-          console.error('[EducationPlayer] Initialization failed:', err);
-          setEduError(err.message || 'YouTube Education再生の初期化に失敗しました');
+          console.warn('[EducationPlayer] Initialization warning:', err);
           setEduLoading(false);
         }
       }
@@ -1739,6 +1756,21 @@ export const EducationPlayer: React.FC<EducationPlayerProps> = ({
               />
             ) : null}
 
+            {/* Unmute prompt for browser autoplay policy (Siatube reference) */}
+            {showEduUnmutePrompt && (
+              <div className="absolute top-4 left-4 z-40 animate-bounce">
+                <button
+                  type="button"
+                  onClick={handleUnmuteEduClick}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs sm:text-sm rounded-full shadow-2xl flex items-center gap-2 border border-white/20 transition-transform active:scale-95 cursor-pointer backdrop-blur-md"
+                  title="ブラウザの自動再生ポリシーにより消音されているため、クリックして音声を再生します"
+                >
+                  <VolumeX className="w-4 h-4 text-white animate-pulse" />
+                  <span>ミュートを解除する</span>
+                </button>
+              </div>
+            )}
+
             {eduLoading && (
               <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center bg-black/60 backdrop-blur-xs text-white space-y-3 animate-fade-in">
                 <Loader2 className="w-8 h-8 animate-spin text-red-500" />
@@ -1746,7 +1778,7 @@ export const EducationPlayer: React.FC<EducationPlayerProps> = ({
               </div>
             )}
 
-            {eduError && (
+            {eduError && !eduUrl && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 bg-neutral-950 text-white text-center space-y-3">
                 <AlertCircle className="w-8 h-8 text-rose-500" />
                 <p className="text-sm text-rose-300 font-bold">{eduError}</p>

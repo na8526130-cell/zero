@@ -9,6 +9,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist",
     "build:gas": "NODE_ENV=production vite build --mode production && node scripts/build-gas.cjs",
+    "deploy:ninja": "node scripts/deploy-ninja.mjs",
     "postinstall": "node install-yt-dlp.js",
     "setup:ytdlp": "node install-yt-dlp.js",
     "lint": "tsc --noEmit"

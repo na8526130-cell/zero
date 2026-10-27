@@ -16,7 +16,8 @@ import {
   Zap,
   Globe,
   Cpu,
-  Download
+  Download,
+  Key
 } from 'lucide-react';
 import {
   customFetch,
@@ -36,6 +37,7 @@ import {
 import {
   generateGasCode,
   generateGasIndexHtml,
+  generateGasManifest,
   getSavedGasProxyUrl,
   saveGasProxyUrl,
   testGasProxyConnection,
@@ -62,7 +64,7 @@ interface SubsystemCheckItem {
 }
 
 export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<'worker' | 'status' | 'gassync' | 'gas1' | 'gas2' | 'custom'>('worker');
+  const [activeTab, setActiveTab] = useState<'worker' | 'status' | 'gassync' | 'gas1' | 'gas2' | 'gas3' | 'custom'>('worker');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     success: boolean;
@@ -83,11 +85,13 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
   const [gasTestResult, setGasTestResult] = useState<{ success: boolean; message: string; latency?: number } | null>(null);
   const [copiedGasCode, setCopiedGasCode] = useState(false);
   const [copiedGasHtml, setCopiedGasHtml] = useState(false);
+  const [copiedGasManifest, setCopiedGasManifest] = useState(false);
   const [inGasEnv, setInGasEnv] = useState(false);
   const [syncingWithDocs, setSyncingWithDocs] = useState(false);
   const [syncDocsResult, setSyncDocsResult] = useState<{ success: boolean; message: string } | null>(null);
   const [liveGasCode, setLiveGasCode] = useState<string>('');
   const [liveGasHtml, setLiveGasHtml] = useState<string>('');
+  const [liveGasManifest, setLiveGasManifest] = useState<string>('');
 
   // Self-Built InnerTube Cloudflare Worker State
   const [workerUrlInput, setWorkerUrlInput] = useState<string>(() => getApiSettings().innertubeUrl || '/api/worker');
@@ -128,6 +132,7 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
         .then((data) => {
           if (data?.code) setLiveGasCode(data.code);
           if (data?.html) setLiveGasHtml(data.html);
+          if (data?.manifest) setLiveGasManifest(data.manifest);
         })
         .catch(() => {});
     }
@@ -392,9 +397,10 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
           const data = await res.json();
           if (data?.code) setLiveGasCode(data.code);
           if (data?.html) setLiveGasHtml(data.html);
+          if (data?.manifest) setLiveGasManifest(data.manifest);
           setSyncDocsResult({
             success: true,
-            message: '最新のGASコード (Code.gs / index.html) を取得・更新完了しました'
+            message: '最新のGASコード (Code.gs / index.html / appsscript.json) を取得・更新完了しました'
           });
         } else {
           throw new Error('API response status ' + res.status);
@@ -457,6 +463,7 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
 
   const gasCodeText = liveGasCode || generateGasCode();
   const gasHtmlText = liveGasHtml || generateGasIndexHtml(typeof window !== 'undefined' ? window.location.origin : '');
+  const gasManifestText = liveGasManifest || generateGasManifest();
   const gasHtmlPreviewText =
     gasHtmlText.length > 16000
       ? `${gasHtmlText.slice(0, 16000)}\n\n/* ... プレビュー表示は先頭 16,000 文字まで省略されています（全体: ${Math.round(gasHtmlText.length / 1024)} KB）。「HTMLをコピー」または「ダウンロード」で完全な全コードが取得されます ... */`
@@ -541,6 +548,15 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
           >
             <Server className="w-3.5 h-3.5 text-purple-400" />
             <span>GAS index.html</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('gas3')}
+            className={`px-3 py-2 rounded-lg font-medium transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              activeTab === 'gas3' ? 'bg-neutral-800 text-white font-bold' : 'text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-rose-400" />
+            <span>GAS OAuth設定 (appsscript.json)</span>
           </button>
           <button
             onClick={() => setActiveTab('custom')}
@@ -1130,6 +1146,75 @@ export const ProxyGuideModal: React.FC<ProxyGuideModalProps> = ({ isOpen, onClos
               <div className="relative">
                 <pre className="p-3.5 bg-neutral-950 rounded-xl border border-neutral-800 text-[11px] font-mono text-neutral-300 overflow-x-auto max-h-72">
                   {gasHtmlPreviewText}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          {/* GAS 3: appsscript.json Manifest & YouTube OAuth Scopes */}
+          {activeTab === 'gas3' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-bold text-white text-xs">Google Apps Script マニフェスト (appsscript.json)</h4>
+                    <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
+                      YouTube Data API v3 OAuth
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    「村上Tube」などのGoogleアカウント承認画面でYouTube動画・再生リスト・コメント・分析への公式アクセス権限を自動付与するマニフェスト設定です。
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadWorkerFile('appsscript.json', gasManifestText)}
+                    className="px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-neutral-300" />
+                    <span>appsscript.json DL</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(gasManifestText);
+                      setCopiedGasManifest(true);
+                      setTimeout(() => setCopiedGasManifest(false), 2000);
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    {copiedGasManifest ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedGasManifest ? 'コピー完了' : 'マニフェストをコピー'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Instructions on how to enable appsscript.json */}
+              <div className="p-3 bg-neutral-950/60 rounded-xl border border-neutral-800 text-xs text-neutral-300 space-y-1.5">
+                <div className="font-bold text-white flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-amber-400" />
+                  <span>GASマニフェスト (appsscript.json) の設定手順</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1 text-neutral-400 pl-1 text-[11px] leading-relaxed">
+                  <li>
+                    GASエディタ左メニューの歯車アイコン「<strong>プロジェクトの設定</strong>」を開きます
+                  </li>
+                  <li>
+                    「<strong>「appsscript.json」マニフェスト ファイルをエディタで表示する</strong>」にチェックを入れます
+                  </li>
+                  <li>
+                    左メニューのコード「&lt;&gt;」に戻ると、ファイル一覧に <code>appsscript.json</code> が表示されます
+                  </li>
+                  <li>
+                    下の JSON を丸ごと貼り付けて保存すれば、Googleアカウント承認（村上Tube）で YouTube Data API v3 の正規トークンが自動発行されます！
+                  </li>
+                </ol>
+              </div>
+
+              <div className="relative">
+                <pre className="p-3.5 bg-neutral-950 rounded-xl border border-neutral-800 text-[11px] font-mono text-neutral-300 overflow-x-auto max-h-72">
+                  {gasManifestText}
                 </pre>
               </div>
             </div>
