@@ -177,8 +177,14 @@ async function collectFiles(dir, baseDir = '') {
       results.push({ isDir: true, path: relPath });
       results.push(...(await collectFiles(fullPath, relPath)));
     } else {
-      // Skip server.cjs, map files, and user screenshot attachments
-      if (entry.name.endsWith('.cjs') || entry.name.endsWith('.cjs.map') || entry.name.includes('image_d56dfb9a')) continue;
+      // Skip server.cjs, map files, and prompt attachments
+      if (
+        entry.name.endsWith('.cjs') ||
+        entry.name.endsWith('.cjs.map') ||
+        entry.name.endsWith('.map') ||
+        relPath.startsWith('assets/aistudio') ||
+        entry.name.includes('aistudio')
+      ) continue;
       results.push({ isDir: false, fullPath, path: relPath });
     }
   }

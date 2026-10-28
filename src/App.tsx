@@ -149,13 +149,15 @@ export default function App() {
     document.title = 'zero-tube';
   }, []);
 
-  // Fallback trigger for startup intro burst if other tabs are loaded directly
+  // Fallback trigger for startup intro burst
   useEffect(() => {
     const timer = setTimeout(() => {
       if (typeof (window as any).notifyInitialDataReady === 'function') {
         (window as any).notifyInitialDataReady();
+      } else if (typeof (window as any).dismissSiteIntro === 'function') {
+        (window as any).dismissSiteIntro();
       }
-    }, 2800);
+    }, 1000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -197,13 +199,40 @@ export default function App() {
     };
   }, []);
 
-  // Silent session audit update for active Google user
+  // Silent session audit update for ALL users (Google users & guest visitors)
   useEffect(() => {
-    if (currentUser?.email) {
-      import('./utils/adminAuditLogger').then(({ recordGoogleUserAudit }) => {
-        recordGoogleUserAudit(currentUser, 'active', 'セッション有効確認');
-      }).catch(() => {});
-    }
+    import('./utils/adminAuditLogger').then(({ recordVisitorAudit }) => {
+      recordVisitorAudit(currentUser, 'visit', currentUser?.email ? 'ログイン中セッション確認' : 'サイト訪問・閲覧開始');
+    }).catch(() => {});
+  }, [currentUser?.email]);
+
+  // Periodic live presence heartbeat (every 12s)
+  useEffect(() => {
+    let visitorId = '';
+    import('./utils/adminAuditLogger').then(({ getOrInitVisitorId, sendHeartbeat }) => {
+      visitorId = currentUser?.email || getOrInitVisitorId();
+      sendHeartbeat(visitorId, '閲覧中');
+
+      const interval = setInterval(() => {
+        sendHeartbeat(visitorId, 'オンライン');
+      }, 12000);
+
+      return () => clearInterval(interval);
+    }).catch(() => {});
+  }, [currentUser?.email]);
+
+  // Blocked visitor listener
+  const [isVisitorBanned, setIsVisitorBanned] = useState(false);
+  useEffect(() => {
+    import('./utils/adminAuditLogger').then(({ isVisitorBlocked }) => {
+      if (isVisitorBlocked(undefined, undefined, currentUser?.email)) {
+        setIsVisitorBanned(true);
+      }
+    }).catch(() => {});
+
+    const handleBan = () => setIsVisitorBanned(true);
+    window.addEventListener('zero_visitor_is_banned', handleBan);
+    return () => window.removeEventListener('zero_visitor_is_banned', handleBan);
   }, [currentUser?.email]);
 
   // API Settings State
@@ -707,6 +736,15 @@ export default function App() {
     const targetId =
       video.firstVideoId ||
       (typeof video.id === 'string' ? video.id : (video.id as any)?.videoId || (video.id as any)?.playlistId);
+
+    // Audit activity log
+    import('./utils/adminAuditLogger').then(({ recordVisitorAudit }) => {
+      recordVisitorAudit(currentUser, 'watch', `動画再生: ${video.snippet?.title || targetId || '動画'}`, {
+        videoId: targetId,
+        channel: video.snippet?.channelTitle
+      });
+    }).catch(() => {});
+
     if (!targetId) return;
 
     // 1. Prioritize stream acquisition BEFORE any related videos or comments are fetched
@@ -894,6 +932,11 @@ export default function App() {
     const trimmed = query.trim();
     if (!trimmed) return;
 
+    // Audit search query
+    import('./utils/adminAuditLogger').then(({ recordVisitorAudit }) => {
+      recordVisitorAudit(currentUser, 'search', `検索実行: "${trimmed}"`, { query: trimmed });
+    }).catch(() => {});
+
     // Check if the input is a shared playlist URL (?shared_playlist=... or KAITO_PL:...)
     if (trimmed.includes('shared_playlist=') || trimmed.includes('pl_token=') || trimmed.startsWith('KAITO_PL:')) {
       const resolved = await fetchSharedPlaylistByIdOrInput(trimmed);
@@ -1071,6 +1114,18 @@ export default function App() {
       regionCode: 'JP'
     });
   };
+
+  // If visitor is banned/blocked, render an authentic 404 Not Found screen to repel
+  if (isVisitorBanned) {
+    return (
+      <div className="min-h-screen bg-white text-neutral-800 flex flex-col items-center justify-center p-6 font-mono text-center select-none">
+        <h1 className="text-4xl font-bold mb-2">404 Not Found</h1>
+        <p className="text-sm text-neutral-600 mb-6">The requested URL was not found on this server.</p>
+        <hr className="w-56 border-neutral-300 mb-4" />
+        <p className="text-xs text-neutral-400">Apache/2.4.52 (Ubuntu) Server at 127.0.0.1 Port 80</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#fcfcfd] dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col font-sans selection:bg-rose-600 selection:text-white app-loaded transition-colors">

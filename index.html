@@ -4,16 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>zero-tube</title>
-    <meta name="description" content="YouTube Data APIを活用した多機能動画クライアント「zero-tube」。急上昇・検索・チャンネル・コメント・Education埋め込み再生対応。" />
+    <meta name="description" content="zero-tube - 高速で快適な次世代Web動画プレイヤー。" />
     <meta property="og:title" content="zero-tube" />
-    <meta property="og:description" content="YouTube Data APIを活用した多機能動画クライアント「zero-tube」。急上昇・検索・チャンネル・コメント・Education埋め込み再生対応。" />
+    <meta property="og:description" content="zero-tube - 高速で快適な次世代Web動画プレイヤー。" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" id="app-favicon" />
     <link rel="shortcut icon" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/favicon.svg" />
-    <!-- Google Identity Services (GIS) for Google Sign-In -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
-      // 起動画面が出る前に保存済みテーマを即座に反映し、白いフラッシュを防ぐ
       (function() {
         try {
           var mode = localStorage.getItem('kaito_theme_mode') || localStorage.getItem('themeMode');
@@ -29,9 +27,6 @@
       })();
     </script>
     <style id="site-intro-styles">
-      /* ============================================================
-         YouTube Cinematic Next-Gen Startup Intro (Muratube Enhanced)
-         ============================================================ */
       #site-intro {
         position: fixed;
         inset: 0;
@@ -46,7 +41,9 @@
         user-select: none;
         -webkit-user-select: none;
         overflow: hidden;
-        transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), filter 0.45s ease;
+        cursor: pointer;
+        touch-action: manipulation;
+        transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), filter 0.4s ease;
       }
 
       /* Light mode adaptation */
@@ -384,8 +381,7 @@
     </style>
   </head>
   <body class="bg-[#0f0f0f] text-neutral-100 transition-colors">
-    <!-- Cinematic Startup Intro (YouTube Pro Style + Burst Sync) -->
-    <div id="site-intro" role="status" aria-label="zero-tube を起動中">
+    <div id="site-intro" role="status" aria-label="zero-tube" onclick="(window.dismissSiteIntro||function(){var s=document.getElementById('site-intro');if(s)s.remove();})()">
       <div class="site-intro-flash" aria-hidden="true"></div>
       <div class="site-intro-ambient" aria-hidden="true"></div>
       <div class="site-intro-shockwave" aria-hidden="true"></div>
@@ -412,15 +408,13 @@
     <!-- Pre-rendered Startup Sound for immediate HTML5 Audio autoplay fallback -->
     <audio id="startup-audio" src="/assets/startup-sound.wav" preload="auto" playsinline style="display:none;"></audio>
 
-    <!-- App Root Container -->
     <div id="root"></div>
 
-    <!-- Startup Synth Sound Engine & Background Sync Controller Script -->
     <script>
       (function() {
         var introStartTime = Date.now();
-        var minIntroDuration = 1350; // Minimum time for the aesthetic logo bloom to unfold (1.35s)
-        var maxSafetyTimeout = 3200; // Safety cap: never stall the user more than 3.2s
+        var minIntroDuration = 1050; // Minimum time for the aesthetic logo bloom (1.05s)
+        var maxSafetyTimeout = 1500; // Safety cap: never stall the user more than 1.5s
         var siteIntroClosing = false;
         var dataIsReady = false;
         var safetyTimer = null;
@@ -627,12 +621,19 @@
           introEl.addEventListener('pointermove', handlePassiveInteraction, { passive: true });
           introEl.addEventListener('mousemove', handlePassiveInteraction, { passive: true });
           introEl.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
             if (!hasPlayedStartupSound) {
-              handlePassiveInteraction();
-            } else {
-              triggerBurstExit();
+              tryAutoPlayStartupSound();
             }
+            triggerBurstExit();
           });
+          introEl.addEventListener('touchstart', function(e) {
+            if (!hasPlayedStartupSound) {
+              tryAutoPlayStartupSound();
+            }
+            triggerBurstExit();
+          }, { passive: true });
         }
 
         function removeUnlockListeners() {
@@ -649,21 +650,31 @@
           var siteIntro = document.getElementById('site-intro');
           if (!siteIntro || siteIntroClosing) return;
           siteIntroClosing = true;
-          if (safetyTimer) clearTimeout(safetyTimer);
-          if (promptTimer) clearTimeout(promptTimer);
 
-          // Add bursting light flash
+          if (safetyTimer) {
+            clearTimeout(safetyTimer);
+            safetyTimer = null;
+          }
+
+          // Release pointer events immediately so underlying UI is interactive
+          siteIntro.style.pointerEvents = 'none';
           siteIntro.classList.add('is-bursting');
 
           setTimeout(function() {
-            siteIntro.classList.add('is-hidden');
+            if (siteIntro) {
+              siteIntro.classList.add('is-hidden');
+            }
             setTimeout(function() {
               if (siteIntro && siteIntro.parentNode) {
-                siteIntro.remove();
+                siteIntro.parentNode.removeChild(siteIntro);
               }
-            }, 500);
-          }, 380);
+            }, 300);
+          }, 320);
         }
+
+        window.dismissSiteIntro = function() {
+          triggerBurstExit();
+        };
 
         window.finishSiteIntro = function() {
           triggerBurstExit();
@@ -674,28 +685,33 @@
           dataIsReady = true;
           var elapsed = Date.now() - introStartTime;
           if (elapsed >= minIntroDuration) {
-            // Data is ready and minimum logo intro has blossomed: burst immediately!
             triggerBurstExit();
           } else {
-            // Data is ready slightly early: schedule burst at the exact climax of the animation!
             setTimeout(function() {
               triggerBurstExit();
-            }, minIntroDuration - elapsed);
+            }, Math.max(0, minIntroDuration - elapsed));
           }
         };
 
-        // Safety timeout: if API is slow or offline, burst after 3.2s
+        // Hard safety timeout: if API is slow or offline, burst after 1.5s max
         safetyTimer = setTimeout(function() {
           triggerBurstExit();
         }, maxSafetyTimeout);
 
+        // Window load event safety fallback
+        window.addEventListener('load', function() {
+          setTimeout(function() {
+            triggerBurstExit();
+          }, 1100);
+        });
+
+        // Keydown shortcut dismiss
         window.addEventListener('keydown', function(e) {
           if (e.key === 'Escape' || e.key === ' ' || e.key === 'Enter') {
             if (!hasPlayedStartupSound) {
-              handleImmediateUserGesture(e);
-            } else {
-              triggerBurstExit();
+              tryAutoPlayStartupSound();
             }
+            triggerBurstExit();
           }
         });
 

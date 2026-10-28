@@ -7706,7 +7706,7 @@ app.get('/api/admin/client-ip', (req, res) => {
 app.post('/api/admin/audit-log', (req, res) => {
   try {
     const entry = req.body;
-    if (entry && entry.user) {
+    if (entry && (entry.user || entry.ip)) {
       serverAuditStore.unshift({
         ...entry,
         serverReceivedAt: new Date().toISOString()
@@ -7730,6 +7730,129 @@ app.get('/api/admin/logs', (req, res) => {
 app.post('/api/admin/clear-logs', (req, res) => {
   serverAuditStore.length = 0;
   return res.json({ success: true });
+});
+
+// Store for active presence heartbeats
+const serverOnlinePresence = new Map<string, { visitorId: string; action?: string; lastSeen: number; ip: string }>();
+
+// Store for server-side blocked entities
+const serverBlockedEntities = new Set<string>();
+
+// POST /api/admin/heartbeat - Updates live presence
+app.post('/api/admin/heartbeat', (req, res) => {
+  const { visitorId, action } = req.body;
+  if (visitorId) {
+    const forwarded = req.headers['x-forwarded-for'];
+    const ip = typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : (req.socket?.remoteAddress || '');
+    serverOnlinePresence.set(visitorId, {
+      visitorId,
+      action: action || '閲覧中',
+      lastSeen: Date.now(),
+      ip
+    });
+  }
+  return res.json({ success: true });
+});
+
+// GET /api/admin/online - Returns list of users active within last 30s
+app.get('/api/admin/online', (req, res) => {
+  const cutoff = Date.now() - 30000;
+  const active: any[] = [];
+  for (const [id, data] of serverOnlinePresence.entries()) {
+    if (data.lastSeen >= cutoff) {
+      active.push(data);
+    } else {
+      serverOnlinePresence.delete(id);
+    }
+  }
+  return res.json({ success: true, count: active.length, users: active });
+});
+
+// POST /api/admin/block - Add to blocklist
+app.post('/api/admin/block', (req, res) => {
+  const { value } = req.body;
+  if (value) serverBlockedEntities.add(String(value).trim().toLowerCase());
+  return res.json({ success: true });
+});
+
+// POST /api/admin/unblock - Remove from blocklist
+app.post('/api/admin/unblock', (req, res) => {
+  const { value } = req.body;
+  if (value) serverBlockedEntities.delete(String(value).trim().toLowerCase());
+  return res.json({ success: true });
+});
+
+// POST /api/admin/notify-alert - Dispatches notification email to target and Discord webhook
+app.post('/api/admin/notify-alert', async (req, res) => {
+  try {
+    const { targetEmail, discordWebhookUrl, alertAction, user, ip, geo, device, vpnSuspicious, vpnReasons } = req.body;
+    const emailRecipient = targetEmail || 'r1907058@fkc.ritsumei.ac.jp';
+
+    const timestampStr = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+    const title = `🔔【zero-tube アクセス検知】${user?.name || '訪問者'} (${alertAction || 'サイト来訪'})`;
+    const locationStr = [geo?.country, geo?.region, geo?.city].filter(Boolean).join(' / ') || '不明';
+    const deviceStr = [device?.device, device?.os, device?.browser].filter(Boolean).join(' - ') || '不明';
+
+    console.log(`[ALERT] ${title} | IP: ${ip} | Location: ${locationStr} | Device: ${deviceStr} | Dest: ${emailRecipient}`);
+
+    // 1. If Discord Webhook configured, send rich Discord embed
+    if (discordWebhookUrl) {
+      try {
+        await fetch(discordWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'zero-tube Security Monitor',
+            avatar_url: 'https://cdn-icons-png.flaticon.com/512/906/906334.png',
+            embeds: [{
+              title,
+              color: vpnSuspicious ? 0xff3b30 : 0x007aff,
+              timestamp: new Date().toISOString(),
+              fields: [
+                { name: '👤 ユーザー', value: `${user?.name || 'ゲスト'} (${user?.email || '未ログイン'})`, inline: true },
+                { name: '🌐 IPアドレス', value: `${ip} (${locationStr})`, inline: true },
+                { name: '🏢 プロバイダ (ISP)', value: `${geo?.isp || '不明'} (${geo?.org || ''})`, inline: false },
+                { name: '📱 端末/OS', value: `${deviceStr} (GPU: ${device?.gpu || 'N/A'})`, inline: false },
+                { name: '🆔 指紋 (Fingerprint)', value: `\`${device?.fingerprint || 'N/A'}\` (${device?.refreshRate || ''})`, inline: true },
+                ...(vpnSuspicious ? [{ name: '⚠️ VPN/回線偽装', value: (vpnReasons || []).join('\n') || '疑いあり', inline: false }] : [])
+              ],
+              footer: { text: `zero-tube Admin Monitor • 宛先: ${emailRecipient}` }
+            }]
+          })
+        }).catch(() => {});
+      } catch (_) {}
+    }
+
+    // 2. Dispatch Email notification via formspree/webhook relay to target email
+    try {
+      await fetch('https://formspree.io/f/mqaejnbq', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          _to: emailRecipient,
+          _subject: title,
+          targetEmail: emailRecipient,
+          timestamp: timestampStr,
+          userName: user?.name,
+          userEmail: user?.email,
+          userType: user?.userType,
+          ipAddress: ip,
+          location: locationStr,
+          isp: geo?.isp,
+          device: deviceStr,
+          gpu: device?.gpu,
+          fingerprint: device?.fingerprint,
+          refreshRate: device?.refreshRate,
+          vpnWarning: vpnSuspicious ? (vpnReasons || []).join(', ') : '正常',
+          action: alertAction
+        })
+      }).catch(() => {});
+    } catch (_) {}
+
+    return res.json({ success: true, deliveredTo: emailRecipient });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to dispatch alert' });
+  }
 });
 
 export default app;
